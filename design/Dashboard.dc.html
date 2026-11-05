@@ -1,0 +1,244 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; font-family: Inter, system-ui, -apple-system, sans-serif; background: #f4f6fa; color: #101828; -webkit-font-smoothing: antialiased; }
+    * { box-sizing: border-box; }
+    a { color: #4b3fce; text-decoration: none; }
+    a:hover { color: #3a2fa8; }
+    h1, h2, h3, .display { font-family: "Space Grotesk", Inter, sans-serif; }
+    .card { background: #fff; border: 1px solid #dce3ec; border-radius: 14px; box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06); }
+  </style>
+</helmet>
+
+<div style="display: flex; min-height: 100%; background: #f4f6fa;">
+
+  <!-- Sidebar -->
+  <div style="width: 236px; flex-shrink: 0; background: #0d1220; display: flex; flex-direction: column; padding: 20px 14px;">
+    <div style="display: flex; align-items: center; gap: 9px; padding: 4px 8px 22px;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#8b7fff" stroke-width="1.8" stroke-linecap="round">
+        <path d="M4 10v4M8 6v12M12 3v18M16 6v12M20 10v4"></path>
+      </svg>
+      <span class="display" style="font-size: 15px; font-weight: 700; color: #eef1f7; letter-spacing: -0.02em;">VaaniYantra</span>
+    </div>
+
+    <div style="background: #161d2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 10px 12px; display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+      <span style="width: 26px; height: 26px; border-radius: 7px; background: #6fa8ff; color: #06121f; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;">SR</span>
+      <div style="min-width: 0; flex-grow: 1;">
+        <div style="font-size: 12.5px; color: #eef1f7; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Sunrise Realty</div>
+        <div style="font-size: 11px; color: #7d8aa0;">Real estate</div>
+      </div>
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7d8aa0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+    </div>
+
+    <sc-for list="{{nav}}" as="group" hint-placeholder-count="3">
+      <div style="display: flex; flex-direction: column; gap: 2px; margin-bottom: 18px;">
+        <sc-if value="{{group.label}}" hint-placeholder-val="{{ true }}">
+          <div style="font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: #5c6a80; padding: 0 8px 8px;">{{group.label}}</div>
+        </sc-if>
+        <sc-for list="{{group.items}}" as="item" hint-placeholder-count="5">
+          <div style="display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; font-size: 13.5px; background: {{item.bg}}; color: {{item.fg}};">
+            <span style="width: 15px; height: 15px; border-radius: 4px; border: 1.6px solid {{item.fg}}; opacity: 0.75; flex-shrink: 0;"></span>
+            <span style="flex-grow: 1;">{{item.label}}</span>
+            <sc-if value="{{item.badge}}" hint-placeholder-val="{{ true }}">
+              <span style="font-size: 10.5px; font-weight: 600; background: #22c55e; color: #04220f; border-radius: 999px; padding: 1px 7px;">{{item.badge}}</span>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+    </sc-for>
+
+    <div style="flex-grow: 1;"></div>
+
+    <div style="background: #161d2e; border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 13px;">
+      <div style="display: flex; align-items: baseline; justify-content: space-between;">
+        <span style="font-size: 11px; color: #7d8aa0;">Balance</span>
+        <span class="display" style="font-size: 15px; font-weight: 600; color: #eef1f7;">2,140 min</span>
+      </div>
+      <div style="height: 4px; border-radius: 999px; background: #2a3348; margin-top: 9px; overflow: hidden;">
+        <div style="width: 62%; height: 100%; background: #22c55e; border-radius: 999px;"></div>
+      </div>
+      <div style="font-size: 11px; color: #7d8aa0; margin-top: 8px;">~18 days at current pace</div>
+    </div>
+  </div>
+
+  <!-- Main -->
+  <div style="flex-grow: 1; min-width: 0; display: flex; flex-direction: column;">
+
+    <div style="display: flex; align-items: center; gap: 20px; padding: 20px 32px; background: #fff; border-bottom: 1px solid #dce3ec;">
+      <div>
+        <h1 style="margin: 0; font-size: 21px; font-weight: 600; letter-spacing: -0.02em;">Good morning, Priya</h1>
+        <div style="font-size: 13px; color: #5d6b7d; margin-top: 3px;">Wednesday, 2 September · 2 agents live</div>
+      </div>
+      <div style="flex-grow: 1;"></div>
+      <div style="display: flex; align-items: center; gap: 7px; border: 1px solid #dce3ec; border-radius: 9px; padding: 8px 13px; font-size: 13px; color: #3d4b5c;">
+        <span>Last 7 days</span>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#5d6b7d" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+      </div>
+      <div style="background: #4b3fce; color: #fff; font-size: 13.5px; font-weight: 500; padding: 9px 16px; border-radius: 9px;">Place a call</div>
+    </div>
+
+    <div style="padding: 26px 32px; display: flex; flex-direction: column; gap: 22px;">
+
+      <!-- Stat row -->
+      <div style="display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px;">
+        <sc-for list="{{stats}}" as="s" hint-placeholder-count="4">
+          <div class="card" style="padding: 18px 20px; display: flex; flex-direction: column; gap: 6px;">
+            <div style="font-size: 12.5px; color: #5d6b7d;">{{s.label}}</div>
+            <div class="display" style="font-size: 30px; font-weight: 600; letter-spacing: -0.03em; line-height: 1;">{{s.value}}</div>
+            <div style="display: flex; align-items: center; gap: 5px; font-size: 12px; color: {{s.deltaColor}};">
+              <span>{{s.delta}}</span>
+              <span style="color: #8a97a8;">{{s.sub}}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;">
+
+        <!-- Call volume -->
+        <div class="card" style="grid-column: span 2; padding: 22px;">
+          <div style="display: flex; align-items: baseline; gap: 12px;">
+            <h2 style="margin: 0; font-size: 15px; font-weight: 600;">Calls answered</h2>
+            <div style="flex-grow: 1;"></div>
+            <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: #5d6b7d;">
+              <span style="width: 9px; height: 9px; border-radius: 2px; background: #4b3fce;"></span> Answered
+              <span style="width: 9px; height: 9px; border-radius: 2px; background: #c9cfda; margin-left: 10px;"></span> Before go-live
+            </div>
+          </div>
+          <div style="display: flex; align-items: flex-end; gap: 12px; height: 190px; margin-top: 24px;">
+            <sc-for list="{{bars}}" as="b" hint-placeholder-count="7">
+              <div style="flex-grow: 1; display: flex; flex-direction: column; align-items: center; gap: 9px;">
+                <div style="width: 100%; display: flex; align-items: flex-end; gap: 3px; height: 160px;">
+                  <div style="flex-grow: 1; height: {{b.now}}; background: #4b3fce; border-radius: 4px 4px 0 0;"></div>
+                  <div style="flex-grow: 1; height: {{b.before}}; background: #dfe4ed; border-radius: 4px 4px 0 0;"></div>
+                </div>
+                <span style="font-size: 11.5px; color: #8a97a8;">{{b.day}}</span>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+
+        <!-- Outcomes -->
+        <div class="card" style="padding: 22px; display: flex; flex-direction: column;">
+          <h2 style="margin: 0; font-size: 15px; font-weight: 600;">Latest outcomes</h2>
+          <div style="display: flex; flex-direction: column; gap: 1px; margin-top: 16px; flex-grow: 1;">
+            <sc-for list="{{outcomes}}" as="o" hint-placeholder-count="5">
+              <div style="display: flex; align-items: flex-start; gap: 11px; padding: 11px 0; border-bottom: 1px solid #eef2f7;">
+                <span style="width: 7px; height: 7px; border-radius: 999px; background: {{o.color}}; margin-top: 6px; flex-shrink: 0;"></span>
+                <div style="min-width: 0; flex-grow: 1;">
+                  <div style="font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{o.name}}</div>
+                  <div style="font-size: 12px; color: #5d6b7d; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{o.detail}}</div>
+                </div>
+                <span style="font-size: 11.5px; color: #8a97a8; flex-shrink: 0;">{{o.ago}}</span>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size: 13px; color: #4b3fce; font-weight: 500; padding-top: 14px;">View all outcomes →</div>
+        </div>
+      </div>
+
+      <!-- Agents -->
+      <div class="card" style="padding: 22px;">
+        <div style="display: flex; align-items: baseline;">
+          <h2 style="margin: 0; font-size: 15px; font-weight: 600;">Your agents</h2>
+          <div style="flex-grow: 1;"></div>
+          <span style="font-size: 13px; color: #4b3fce; font-weight: 500;">Manage</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 18px;">
+          <sc-for list="{{agents}}" as="a" hint-placeholder-count="3">
+            <div style="border: 1px solid #dce3ec; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+              <div style="display: flex; align-items: center; gap: 9px;">
+                <span style="width: 7px; height: 7px; border-radius: 999px; background: {{a.dot}};"></span>
+                <span style="font-size: 14px; font-weight: 600;">{{a.name}}</span>
+                <div style="flex-grow: 1;"></div>
+                <span style="font-size: 11px; color: #5d6b7d; background: #eef2f7; border-radius: 999px; padding: 2px 8px;">{{a.status}}</span>
+              </div>
+              <div style="font-size: 12.5px; color: #5d6b7d; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;">{{a.number}}</div>
+              <div style="display: flex; gap: 18px; padding-top: 10px; border-top: 1px solid #eef2f7;">
+                <div>
+                  <div class="display" style="font-size: 17px; font-weight: 600;">{{a.calls}}</div>
+                  <div style="font-size: 11px; color: #8a97a8;">calls</div>
+                </div>
+                <div>
+                  <div class="display" style="font-size: 17px; font-weight: 600;">{{a.mins}}</div>
+                  <div style="font-size: 11px; color: #8a97a8;">minutes</div>
+                </div>
+                <div>
+                  <div class="display" style="font-size: 17px; font-weight: 600;">{{a.booked}}</div>
+                  <div style="font-size: 11px; color: #8a97a8;">booked</div>
+                </div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+</x-dc>
+
+<script data-dc-script>
+class Component extends DCLogic {
+  renderVals() {
+    const on  = { bg: 'rgba(139,127,255,0.16)', fg: '#c9c2ff' };
+    const off = { bg: 'transparent', fg: '#97a3b8' };
+    return {
+      nav: [
+        { label: null, items: [{ label: 'Dashboard', ...on }] },
+        { label: 'Operations', items: [
+          { label: 'Agents', ...off },
+          { label: 'Live calls', ...off, badge: '3' },
+          { label: 'Call history', ...off },
+          { label: 'Outcomes', ...off },
+          { label: 'Appointments', ...off },
+        ] },
+        { label: 'Account', items: [
+          { label: 'Automations', ...off },
+          { label: 'Knowledge', ...off },
+          { label: 'Numbers', ...off },
+          { label: 'Wallet & usage', ...off },
+          { label: 'Settings', ...off },
+        ] },
+      ],
+      stats: [
+        { label: 'Calls answered',   value: '412',    delta: '+18%',   deltaColor: '#067647', sub: 'vs last week' },
+        { label: 'Site visits booked', value: '63',   delta: '+9',     deltaColor: '#067647', sub: 'vs last week' },
+        { label: 'Minutes spoken',   value: '826',    delta: '₹4,130', deltaColor: '#5d6b7d', sub: 'drawn from balance' },
+        { label: 'Missed calls',     value: '0',      delta: 'none',   deltaColor: '#067647', sub: 'since go-live' },
+      ],
+      bars: [
+        { day: 'Wed', now: '52%', before: '20%' },
+        { day: 'Thu', now: '64%', before: '26%' },
+        { day: 'Fri', now: '81%', before: '31%' },
+        { day: 'Sat', now: '100%', before: '24%' },
+        { day: 'Sun', now: '88%', before: '18%' },
+        { day: 'Mon', now: '58%', before: '30%' },
+        { day: 'Tue', now: '44%', before: '27%' },
+      ],
+      outcomes: [
+        { name: 'Anita Rao',      detail: 'Site visit · Sat 11:00 · Gachibowli 3BHK', color: '#067647', ago: '4m' },
+        { name: 'Vikram Shetty',  detail: 'Lead · budget below list, flagged',        color: '#b45309', ago: '22m' },
+        { name: 'Farhan Qureshi', detail: 'Site visit · Sun 16:30 · Kondapur villa',  color: '#067647', ago: '1h' },
+        { name: 'Deepa Menon',    detail: 'Callback requested · after 6pm',           color: '#4b3fce', ago: '2h' },
+        { name: 'Rohit Bansal',   detail: 'Lead · rental, out of scope',              color: '#8a97a8', ago: '3h' },
+      ],
+      agents: [
+        { name: 'Front desk',      status: 'Live',   dot: '#067647', number: '+91 40 4895 6912', calls: '287', mins: '542', booked: '41' },
+        { name: 'Launch weekend',  status: 'Live',   dot: '#067647', number: '+91 40 4895 6913', calls: '104', mins: '232', booked: '19' },
+        { name: 'Rental enquiries', status: 'Paused', dot: '#b45309', number: '+91 40 4895 6914', calls: '21',  mins: '52',  booked: '3' },
+      ],
+    };
+  }
+}
+</script>
+</body>
+</html>

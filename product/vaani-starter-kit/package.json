@@ -1,0 +1,18 @@
+{
+  "name": "vaani-starter-kit",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A phone-answering AI voice agent you own: telephony, voice, WhatsApp and calendar in one small server.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "check": "node scripts/check-setup.js",
+    "simulate": "node scripts/simulate-call.js"
+  },
+  "dependencies": {
+    "@google/genai": "^2.9.0",
+    "dotenv": "^16.4.5",
+    "ws": "^8.18.0"
+  }
+}

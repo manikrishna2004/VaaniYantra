@@ -1,0 +1,33 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "title": "Agency landing", "x": 0, "y": 0, "w": 1440, "h": 4000 },
+    { "file": "SolutionRealEstate.dc.html", "title": "Solutions / Real estate", "x": 1560, "y": 0, "w": 1440, "h": 2450 },
+    { "file": "Dashboard.dc.html", "title": "Dashboard home", "x": 0, "y": 4160, "w": 1440, "h": 1080 },
+    { "file": "Wallet.dc.html", "title": "Wallet & usage", "x": 1560, "y": 4160, "w": 1440, "h": 1200 },
+    { "file": "ClientDetail.dc.html", "title": "Client detail (internal)", "x": 3120, "y": 4160, "w": 1440, "h": 1220 }
+  ],
+  "annotations": [
+    {
+      "id": "system-note",
+      "x": 0,
+      "y": -320,
+      "w": 620,
+      "text": "One system, two surface scales.\n\nMarketing runs on the dark ground; the app stays light because it is data-dense and read all day. The dark sidebar is the bridge between them.\n\nRed stays reserved for danger, warning and success \u2014 the brand hue never enters it."
+    },
+    {
+      "id": "accent-note",
+      "x": 1560,
+      "y": -320,
+      "w": 560,
+      "text": "Per-vertical accent.\n\nEach solutions page sets one accent token \u2014 real estate is blue here. Six industries get six identities with no new components, and the halo and button ink derive from the accent so a swap stays coherent.\n\nTry the swatches on the artboard's tweak row."
+    },
+    {
+      "id": "app-note",
+      "x": 4680,
+      "y": 4160,
+      "w": 560,
+      "text": "The app screens.\n\nDashboard and Wallet are what a client sees. Client detail is ours \u2014 the screen that makes reselling operable: rate against supplier cost, margin, which cloud it runs in, and whether upstream usage reconciled.\n\nAll three now show one consistent set of books: 3,500 min bought, 1,360 used, 2,140 left; 1,284 min over 30 days at \u20b95.00."
+    }
+  ],
+  "launch": { "view": "canvas" }
+}

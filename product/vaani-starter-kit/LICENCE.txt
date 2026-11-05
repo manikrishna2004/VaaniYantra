@@ -1,0 +1,33 @@
+VOICE AGENT STARTER KIT — LICENCE
+
+Copyright (c) 2026 VaaniYantra. All rights reserved.
+
+WHAT YOU MAY DO
+
+  • Run this software for one business that you own or operate.
+  • Run it on as many phone numbers as that business needs.
+  • Modify any part of it, without restriction.
+  • Build and run it on behalf of a client as paid work, including keeping
+    the modified copy running for them.
+  • Keep using it forever. There is no subscription and no licence check.
+
+WHAT YOU MAY NOT DO
+
+  • Resell, republish or redistribute the kit itself, modified or not,
+    whether free or paid.
+  • Package it as a product, template, course or download of your own.
+  • Share your download link or the files with anyone outside your business.
+
+NO WARRANTY
+
+This software is provided "as is", without warranty of any kind, express or
+implied. It places phone calls, writes to calendars and sends messages to real
+people on your behalf, using third-party services that charge you money and can
+change without notice.
+
+You are responsible for what your agent says and does, for the money it spends,
+for obtaining any call-recording consent the law requires where your callers
+are, and for the personal data it records.
+
+In no event shall the authors be liable for any claim, damages or other
+liability arising from the use of this software.

@@ -1,0 +1,2090 @@
+// VaaniYantra — data model
+//
+// Phase 0 (Foundation) introduces multi-tenancy on PostgreSQL:
+//   Organization → Workspace(s) → domain data (Agent, PhoneNumber, Document, Call)
+//   Users belong to Organizations via Membership (with a role).
+//   Auth/identity (users, orgs, members, roles, invites) is owned by Clerk and
+//   mirrored here via webhooks so we can scope queries and join domain data.
+//
+// String columns double as enums (validated in src/lib/validation.ts) to keep
+// the model portable; we kept this convention from the SQLite MVP to avoid
+// churning the working voice engine.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Identity & tenancy ──────────────────────────────────────────────────────
+
+// A platform user, mirrored from Firebase Auth (firebaseUid is the source of truth).
+model User {
+  id          String   @id @default(cuid())
+  firebaseUid String?  @unique
+  email       String   @unique
+  name        String?
+  imageUrl    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships       Membership[]
+  // Active org + workspace per user (where the dashboard lands).
+  activeOrgId       String?
+  activeWorkspaceId String?
+
+  // Doctor identities this user holds. Plural because one account can be a
+  // doctor in more than one organisation.
+  doctors Doctor[]
+
+  // Domain rows this user created (kept for attribution).
+  agents       Agent[]
+  phoneNumbers PhoneNumber[]
+  documents    Document[]
+  calls        Call[]
+  apiKeys      ApiKey[]
+  webhooks     Webhook[]
+}
+
+// A tenant we fully own. Owns workspaces, members, invitations, API keys,
+// and audit logs.
+model Organization {
+  id                     String    @id @default(cuid())
+  name                   String
+  slug                   String    @unique
+  imageUrl               String?
+  // Branding / white-label (Phase 8 builds the UI; column lives here now).
+  brandColor             String?
+  // Phase 7: subscription plan key (free | starter | growth | pro | business |
+  // enterprise). Drives plan limits + the billing page. New orgs start on Free.
+  plan                   String    @default("free")
+  // Operator-controlled service state, set from the admin panel.
+  //
+  //   ACTIVE      — normal.
+  //   PAUSED      — agents stop answering and no outbound calls are placed, but
+  //                 staff can still sign in and see their data. This is the
+  //                 non-payment state: someone chasing an invoice has to be able
+  //                 to reach the billing page.
+  //   DEACTIVATED — the above, plus staff cannot sign in at all.
+  //
+  // Both are reversible and neither touches data; erasure is deleteOrganization.
+  status                 String    @default("ACTIVE")
+  statusReason           String? // shown to the org when it is not ACTIVE
+  statusChangedAt        DateTime?
+  // Cashfree billing linkage. Which of the two IDs is set depends on the
+  // product the platform is running (see src/lib/cashfree.ts): a mandate when
+  // Subscriptions is activated, otherwise one paid month at a time via the
+  // Payment Gateway. Cashfree owns the recurring schedule — we never debit on a
+  // timer, we just record what its webhook reports.
+  cashfreeSubscriptionId String? // mandate id, when running Subscriptions
+  cashfreeOrderId        String? // most recent one-time order, in PG-only mode
+  subscriptionStatus     String? // INITIALIZED | ACTIVE | CANCELLED | ON_HOLD | failed
+  subscriptionAmountInr  Float? // price locked in at subscribe time
+  // PG-only mode: a one-time order buys a single month, so this is when the
+  // paid period lapses and the org needs to renew. Null under a live mandate,
+  // where Cashfree keeps charging until cancelled.
+  paidUntil              DateTime?
+  // Contact details captured at checkout, reused for renewal orders and overage
+  // charges so the owner isn't asked again.
+  billingPhone           String?
+  billingEmail           String?
+  // Tax identity. gstStateCode drives place of supply (CGST+SGST vs IGST) and is
+  // derived from the GSTIN when there is one, else chosen by the customer.
+  // billingName/billingAddress are the "billed to" block on the tax invoice.
+  gstin                  String?
+  gstStateCode           String?
+  billingName            String?
+  // The printable "billed to" address. Composed server-side from the structured
+  // fields below, so the invoice always has one ready-to-render block and never
+  // has to know how the checkout form is laid out.
+  billingAddress         String?
+  // Structured address collected at checkout, kept so the form can be pre-filled
+  // on renewal instead of asking for the whole thing again.
+  billingLine1           String?
+  billingLine2           String?
+  billingCity            String?
+  billingPostalCode      String?
+  // ISO-3166 alpha-2. Null = India (every org predates the country selector).
+  // Anything else makes the sale an export of service — no GST, no GSTIN, and
+  // gstStateCode stays null because place of supply is an Indian concept.
+  billingCountry         String?
+  // Free-text state/province, used instead of gstStateCode outside India.
+  billingRegion          String?
+  // Paid add-on: the AI WhatsApp follow-up chat (callers text questions after a
+  // call, answered from the agent's knowledge base). Owner-enabled; billed a
+  // flat monthly fee (price set in /admin) via the monthly sweep.
+  whatsappChatAddon      Boolean   @default(false)
+  // Enterprise: auto-delete call transcripts/recordings/summaries older than
+  // this many days (null = keep forever). Purged by the retention sweeper in
+  // the voice-server; billing aggregates (duration, status) are kept.
+  dataRetentionDays      Int?
+
+  // ── Legal acceptance ───────────────────────────────────────────────────────
+  // Evidence that this customer agreed to the Terms, Privacy Policy and DPA,
+  // and acknowledged that telling its own patients is its responsibility.
+  // Recorded on the ORGANISATION rather than the User because the org is the
+  // contracting party the DPA binds — a clinic, not a person.
+  //
+  // Why this is stored at all: our data-protection posture is that the clinic
+  // is the Data Fiduciary and we are its Processor. If a clinic later says it
+  // was never told that patients must be notified, an unrecorded checkbox is
+  // worth nothing. See /patient-notice and /dpa §4.
+  //
+  // ⚠ NEVER BACKFILL THESE. Null means we do not hold that org's acceptance —
+  // which is true of every org created before this shipped. Writing a plausible
+  // date into an evidentiary column is manufacturing evidence, and a column
+  // that is sometimes fabricated is worthless for the one purpose it has. Ask
+  // those orgs to re-accept instead.
+  termsAcceptedAt       DateTime?
+  // Which published version they accepted — LEGAL_VERSION in src/lib/legal.ts,
+  // bumped when the documents materially change. Without it "they accepted" is
+  // unanswerable the moment the wording moves.
+  termsVersion          String?
+  // The person who clicked, and the address they clicked from.
+  termsAcceptedByUserId String?
+  termsAcceptedIp       String?
+  // Where this org's patient records actually live. Most clinics arrive with a
+  // practice-management system already in use, so the platform has to be able
+  // to sit on top of one rather than replace it:
+  //   native — we are the system of record (small clinics, no existing software)
+  //   push   — their system is authoritative and POSTs records into our v1 API
+  //   rest   — their system is authoritative and we read it live over HTTP
+  //   fhir   — same, over HL7 FHIR R4
+  // Everything downstream (portal chat, records tab, staff UI) goes through
+  // src/lib/patients, so this switch changes the data source without changing
+  // any of the product on top of it.
+  patientProvider       String    @default("native")
+  // Endpoint + auth + field-mapping config for the rest/fhir providers. Shape
+  // is provider-specific.
+  //
+  // ⚠ THIS COLUMN IS PLAINTEXT. An earlier version of this comment claimed the
+  // secrets inside were encrypted at rest; they are not — nothing calls
+  // encryptSecret on it, and src/lib/patients/index.ts reads it as plain JSON.
+  // Before the rest/fhir providers ship (both are unimplemented today), either
+  // encrypt this the way Integration.secret is handled in src/lib/connectors.ts,
+  // or move the credentials out to an Integration row and keep only the
+  // non-secret mapping here.
+  patientProviderConfig Json?
+  // ── Patient numbering (UHID) ───────────────────────────────────────────────
+  // Every patient gets a short, human-readable number staff can say out loud
+  // and write on a file — "SDC-000147". The prefix is per-clinic and editable;
+  // uhidSeq is the counter behind the digits.
+  //
+  // Allocation is a single atomic `UPDATE … SET uhidSeq = uhidSeq + 1 …
+  // RETURNING` (src/lib/patients/uhid.ts), so concurrent bookings can never be
+  // handed the same number. The prefix is deliberately NOT part of the stored
+  // number, so renaming a clinic never renumbers its patients.
+  uhidSeq               Int       @default(0)
+  uhidPrefix            String?
+  // Prepaid call minutes bought up front and not yet consumed.
+  //
+  // The org estimates what it will use, pays for those minutes before it uses
+  // them, and this counter is drawn down by the monthly sweep. Minutes past the
+  // balance are NOT blocked — they are invoiced after the month ends, which is
+  // the point of the arrangement: nobody's phone stops because they guessed low.
+  //
+  // A carried balance, not a monthly allowance: whatever is left after a sweep
+  // stays here for the next month. It is money already paid, so forfeiting it
+  // at a month boundary would be taking it twice.
+  prepaidMinutes        Float     @default(0)
+  // "YYYY-MM" of the last month this org was told its credits had run out.
+  // One alert per calendar month: the gate is checked on every call, and the
+  // owner does not need an email per caller.
+  creditAlertMonth      String?
+  // ── Where this org's billable minutes come from ────────────────────────────
+  //
+  //   calls  — SUM(Call.durationSec), which is what every org has always been
+  //            billed on and what the whole billing path still reads today.
+  //   ledger — SUM(UsageEvent.quantity), which is the only thing that can
+  //            measure a call we did not run: one placed on a reseller's
+  //            platform, or answered by a deployment in a client's own cloud.
+  //
+  // A COLUMN, not a code branch, and per org rather than global: the migration
+  // is one account at a time, and a bad flip is reverted by moving one row back
+  // rather than by shipping a deploy.
+  //
+  // `usageSourceSince` is the "YYYY-MM" the flip took effect. It exists so a
+  // PAST month is priced from the source that was authoritative THEN — the same
+  // reason PlanChange exists for plans. Compared lexicographically, which for
+  // "YYYY-MM" is chronological. Null means the flip has never happened.
+  //
+  // Flipping mid-month is forbidden: half a month from each source either
+  // double-counts or loses minutes, and OverageCharge is unique per month so
+  // the error would be permanent. The admin route enforces it.
+  usageSource           String    @default("calls") // calls | ledger
+  usageSourceSince      String?
+  // ── How this org is billed ─────────────────────────────────────────────────
+  //
+  //   legacy         — the plan catalogue decides everything, exactly as it
+  //                    always has: a usage-based plan is prepaid-gated, a
+  //                    monthly plan is not.
+  //   prepaid_wallet — this org buys minutes up front and the credit gate
+  //                    applies to it, WHATEVER plan key it holds.
+  //
+  // An explicit column rather than the old inference ("is prepaid" = "is on a
+  // usage-based plan"). That inference was sound only while price and plan were
+  // the same thing; a legacy-plan org sold a RateCard breaks it, and the break
+  // is silent — the org tops up, spends the balance, and is never gated.
+  //
+  // Default `legacy` is what makes this a no-op on deploy: every org today
+  // resolves the way it did before the column existed.
+  billingModel          String    @default("legacy") // legacy | prepaid_wallet
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  workspaces            Workspace[]
+  memberships           Membership[]
+  invitations           Invitation[]
+  apiKeys               ApiKey[]
+  auditLogs             AuditLog[]
+  integrations          Integration[]
+  overageCharges        OverageCharge[]
+  planChanges           PlanChange[]
+  invoices              Invoice[]
+  contacts              Contact[]
+  portals               Portal[]
+  payments              PaymentApplication[]
+  minuteTopUps          MinuteTopUp[]
+  usageEvents           UsageEvent[]
+  voicePlatformAccounts VoicePlatformAccount[]
+  rateCards             RateCard[]
+  deployments           Deployment[]
+}
+
+// ── The usage ledger ────────────────────────────────────────────────────────
+//
+// Append-only. One row per unit of usage a source reported, plus one row per
+// later CORRECTION to it. Nothing here is ever UPDATEd or DELETEd, which is why
+// there is deliberately no `updatedAt`: its absence is the guarantee.
+//
+// WHY THIS EXISTS. Until now a billable minute simply WAS `Call.durationSec`,
+// summed straight out of the calls table. That works exactly as long as we run
+// every call ourselves. The moment voice is bought from a reseller, or a
+// deployment runs inside a client's own cloud, our own table stops being a
+// record of what happened — and an aggregate over it stops being a record of
+// what we may charge for.
+//
+// EXACTLY-ONCE. `@@unique([source, externalId, seq])` is the whole mechanism,
+// and it is the same one this codebase already trusts four times over
+// (MinuteTopUp.gatewayOrderId, OverageCharge(orgId, month),
+// PaymentApplication.orderId, Invoice.number): the insert IS the claim, a
+// unique constraint is the arbiter, and the claim happens in the same
+// transaction as its effect. A replayed poll, an overlapping cron and a manual
+// re-sync all converge on one row, and Prisma's P2002 is the SUCCESS case.
+//
+// CORRECTIONS ARE ROWS, NOT EDITS. A provider that revises a call's duration
+// three weeks later does not rewrite history — it appends the DIFFERENCE at the
+// next `seq`. The current total for a record is the sum of its rows, so an
+// audit can always show what was reported, when, and by whom.
+model UsageEvent {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  // Nullable for the same reason Call.workspaceId is: usage can arrive before
+  // routing has resolved a workspace, and the org is what gets billed.
+  workspaceId String?
+
+  // What is being measured. String-as-enum, matching this schema's convention.
+  //   voice.minutes           — billable talk time (see `quantity` for the unit)
+  //   voice.minutes.reported  — the SAME talk time as self-reported by a
+  //                             deployment we do not control. Deliberately a
+  //                             different metric string so that billing, which
+  //                             only ever sums `voice.minutes`, cannot read it
+  //                             even by accident. It exists to be compared
+  //                             against the authoritative figure, never to be
+  //                             charged for.
+  metric     String
+  // Who reported it, and therefore who is authoritative for it.
+  //   vaani_voice   — our own Gemini Live pipeline
+  //   omnidimension — pulled from the reseller platform
+  //   client_cloud  — self-reported by a single-tenant install (never billed)
+  //   manual        — a founder adjustment, always with a note in `raw`
+  source     String
+  // The reporting system's own id for this unit of usage: Call.id for
+  // vaani_voice, the provider's call id for a reseller.
+  externalId String
+  // Correction generation. 0 is the original report; 1, 2, … are deltas.
+  seq        Int    @default(0)
+
+  // A SIGNED delta in the metric's canonical unit. For voice.minutes that unit
+  // is SECONDS, as an Int — deliberately not minutes and deliberately not a
+  // float. Rounding to minutes happens ONCE, on the month's total, exactly
+  // where it happens today (`Math.round(sum / 60)`); rounding per event would
+  // quietly re-bill every live org the day the ledger became authoritative.
+  quantity Int
+
+  // When the usage HAPPENED, per the reporting system.
+  occurredAt   DateTime
+  // The "YYYY-MM" this row is BILLED in. Normally the month `occurredAt` falls
+  // in — but a row that arrives after that month was settled rolls forward to
+  // the earliest open month instead, because reopening a settled month would
+  // contradict an OverageCharge that an immutable Invoice was built from.
+  billingMonth String
+  // month(occurredAt), kept so a rolled-forward row can be explained to a
+  // customer ("40 minutes from March, billed in April") rather than looking
+  // like an April call nobody remembers making.
+  originMonth  String
+
+  // What the upstream provider charged US for this quantity, in INR. Null when
+  // we ran the call ourselves or the cost is not yet known. This is the margin
+  // half of a reselling business: revenue is what we charge, this is what it
+  // cost, and the difference should be a subtraction rather than a spreadsheet.
+  //
+  // Decimal, not the Float used by the older money columns: a ledger sums
+  // thousands of rows before anything is rounded, and a margin is the small
+  // difference between two large sums — the two places binary floats hurt most.
+  costInr Decimal? @db.Decimal(12, 4)
+
+  // Soft links. Not foreign keys: a Call may be deleted by the retention sweep
+  // long before its billing record should disappear, and losing the evidence
+  // for a charge to a cascade would be worse than holding a dangling id.
+  callId       String?
+  deploymentId String?
+  // Whatever the source reported, verbatim — the evidence behind the number,
+  // for the day a customer disputes a minute.
+  raw          Json?
+  createdAt    DateTime @default(now())
+
+  @@unique([source, externalId, seq])
+  // The billing read: one org, one month, one metric.
+  @@index([orgId, billingMonth, metric])
+  // The reconciliation and reporting read.
+  @@index([orgId, occurredAt])
+  @@index([callId])
+}
+
+// ── A sub-account we hold on a reseller voice platform ──────────────────────
+//
+// The reseller boundary. OmniDimension invoices US per child organisation; we
+// invoice the client per organisation here. This row is the join between the
+// two, and it is what makes a minute spoken on their infrastructure billable on
+// ours.
+//
+// ⚠ `onDelete: Restrict`, deliberately unlike every other model in this schema.
+// Deleting a VaaniYantra org must not silently orphan a supplier account we are
+// still being invoiced for — it must fail loudly until the child organisation
+// has been closed upstream. See scripts/delete-org.ts.
+model VoicePlatformAccount {
+  id           String       @id @default(cuid())
+  provider     String       @default("omnidimension")
+  orgId        String
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  workspaceId  String?
+  // Their organisation id, as a string. Numeric upstream, but ids from other
+  // providers will not be, and a column that has to change type later is worse
+  // than one that is a little loose now.
+  subAccountId String
+  label        String
+
+  // A child-scoped API key, encrypted at rest with src/lib/crypto.ts exactly as
+  // Integration.secret is. Null means "use the platform-level reseller key".
+  //
+  // Which of those is correct is the one thing the docs do not settle: the
+  // reseller endpoints are partner-scoped, but /calls/logs is scoped to the key
+  // that calls it. If a reseller key cannot read a child's call logs, every
+  // account needs its own key here — and a client-cloud deployment must never
+  // be given the reseller key, or one client can read every other client's
+  // minutes.
+  apiKeyEnc String?
+  status    String  @default("ACTIVE") // ACTIVE | SUSPENDED | CLOSED
+
+  // ── Cached from the provider at each poll, for the margin report ──────────
+  // What they charge us per minute for this child, and the child's remaining
+  // balance. `org_balance` is denominated in MINUTES and is the real prepaid
+  // enforcement: a child with no credits cannot place a call, upstream, where
+  // a client with root on their own deployment cannot patch it out.
+  costPerMin     Float?
+  balanceMinutes Float?
+  // The child organisation's timezone, as the provider reports it. Load-bearing:
+  // call timestamps come back as a local-format string with no offset, so this
+  // is what decides which month a minute is billed in.
+  timezone       String?
+
+  // ── Reconciliation cursor ─────────────────────────────────────────────────
+  //
+  // A high-water mark on the provider's numeric call-log id, NOT on a time.
+  // Their /calls/logs takes only pageno/pagesize/agentid/call_status — there is
+  // no date filter and no updated-at field anywhere in a call record. So we
+  // page from the newest until we reach an id we already hold, and corrections
+  // to an older call can only be found by re-reading it (see the month-end full
+  // re-pull in src/lib/usage/omni-reconcile.ts).
+  cursorLogId         Int?
+  lastPolledAt        DateTime?
+  lastRecordAt        DateTime?
+  consecutiveFailures Int       @default(0)
+  lastError           String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([provider, subAccountId])
+  @@index([orgId])
+}
+
+// ── What the supplier actually invoiced us for a month ──────────────────────
+//
+// Margin is measured against a document, not against our own guess at their
+// rate card. UsageEvent.costInr carries our per-call estimate; this carries the
+// bill. A gap between the two means the assumed rate is wrong, which is a
+// silent margin bug of exactly the kind billing-correctness tests exist to
+// catch — and the sort that is only ever noticed at year end.
+model SupplierInvoice {
+  id          String   @id @default(cuid())
+  provider    String   @default("omnidimension")
+  month       String // "YYYY-MM"
+  currency    String   @default("INR")
+  amount      Decimal  @db.Decimal(14, 4)
+  // Their reported total, for cross-checking our own sum of the call records.
+  seconds     Int?
+  // Frozen at entry. A supplier invoice in USD reconciled at today's rate would
+  // silently restate every past month's margin as the rupee moves.
+  fxRateToInr Float?
+  reference   String?
+  note        String?
+  enteredById String?
+  createdAt   DateTime @default(now())
+
+  @@unique([provider, month])
+}
+
+// ── What one client is charged ──────────────────────────────────────────────
+//
+// The plan catalogue answers "what does the product cost". A rate card answers
+// "what does THIS client pay", which stopped being the same question the moment
+// the business started quoting a bespoke bundle of automations per client.
+//
+// An OVERLAY, never a replacement. `PLANS` keeps its 16 keys, `Organization.plan`
+// keeps holding one, and issued invoices keep being stamped with it — those keys
+// are load-bearing in Cashfree order tags and in every OverageCharge already
+// written. A card only overrides the numbers, and only for the org it names.
+// With no rows in this table the whole mechanism is invisible: `rateFor()`
+// returns exactly what `getEffectivePlan()` returned before it existed.
+//
+// EFFECTIVE-DATED AND APPEND-ONLY, for the same reason PlanChange is: the sweep
+// runs on the 2nd and prices the month that just ended. A card agreed on the 1st
+// of April must not reprice March. So a renegotiation CLOSES the standing card
+// (sets `effectiveTo`) and INSERTS a new one — nothing is ever edited in place,
+// and "what were they paying in March" stays answerable.
+//
+// ⚠ THE ONE-WAY DOOR. Writing the first card for a client is the moment a price
+// becomes a quote someone was given. Repricing a live org after that is a
+// commercial conversation, not a column update.
+model RateCard {
+  id            String       @id @default(cuid())
+  orgId         String
+  org           Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  effectiveFrom DateTime
+  // Null = still in force. Set when the next card supersedes this one.
+  effectiveTo   DateTime?
+
+  // ISO-4217. INR today; the column exists because the schema's older money is
+  // spelled into its column NAMES (amountInr, totalInr) and cannot carry a
+  // second currency without those names becoming lies. New tables carry it.
+  currency String @default("INR")
+
+  // What the client pays per billable minute. Overrides BOTH the plan's
+  // pricePerMinute and its overagePerMinute — on a usage plan those are the
+  // same number by construction, and a card is a usage price by definition.
+  pricePerMinute   Decimal  @db.Decimal(10, 4)
+  // What the minute costs US upstream. NEVER charged to anyone: it is here so
+  // margin is a subtraction rather than an archaeology exercise across a
+  // supplier invoice, a spreadsheet and a memory of what was agreed.
+  costPerMinute    Decimal? @db.Decimal(10, 4)
+  // The agency half of the deal: a flat monthly fee for the automations, which
+  // a per-minute rate does not cover and never will. Billed by the monthly
+  // sweep alongside the minutes.
+  retainerInr      Decimal? @db.Decimal(12, 2)
+  // A monthly floor on the usage charge. A client who commits to ₹20,000 of
+  // minutes and speaks ₹12,000 of them is billed the commitment.
+  minimumInr       Decimal? @db.Decimal(12, 2)
+  // Per-metric prices for everything that is not a voice minute, keyed by
+  // UsageEvent.metric ({ "automation.run": 2.5 }). Json because the metrics are
+  // still being discovered; a column per metric would be a migration per deal.
+  metricRates      Json?
+  // A per-client runaway-usage stop. Reported by `rateFor()` and shown on the
+  // billing page; the CALL-ADMISSION cap is still the plan's, because reading a
+  // card on every inbound call would tie src/lib/billing/catalogue.ts to the rate-card
+  // module in both directions for a limit no live org has yet. Wire it into
+  // checkCallMinutesAllowed when the first carded client goes live.
+  // Null = the plan's cap applies.
+  monthlyMinuteCap Int?
+
+  // Who agreed it, and the shape of the deal in one line. A card with no note
+  // is a number nobody can explain a year later.
+  note        String?
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  // The read is always "the card in force for this org at this moment".
+  @@index([orgId, effectiveFrom])
+}
+
+// ── A place this software runs ──────────────────────────────────────────────
+//
+// Two modes, and the difference is who has root:
+//
+//   shared    — our cloud. One row (`dep_vaani_cloud`) so the channel below has
+//               a real client before any customer does; it heartbeats to itself.
+//   dedicated — the client's own cloud. Their ops team has root on that box.
+//
+// THE TRUST BOUNDARY, STATED PLAINLY. A dedicated install is not trusted. It
+// may report telemetry, and that telemetry lands under a metric billing never
+// sums (`voice.minutes.reported`). It may never write a billable minute. The
+// key below is an IDENTITY, not a secrecy guarantee: it sits in a file on a
+// machine the client administers, and pretending otherwise would build the rest
+// of this on a fiction.
+//
+// The channel is strictly OUTBOUND FROM THE CLIENT — the install polls us. We
+// never dial into a client network. That is a hard rule: it keeps us off their
+// firewall's inbound list, and keeps us from becoming an attack path into it.
+model Deployment {
+  // Human-chosen and stable — it is printed in logs and pasted into a client's
+  // .env, so a cuid would be a worse identifier than "dep_acme".
+  id     String        @id
+  label  String
+  mode   String        @default("dedicated") // shared | dedicated
+  // The single organisation a dedicated install serves. Null for the shared
+  // cloud, which serves all of them.
+  orgId  String?
+  org    Organization? @relation(fields: [orgId], references: [id], onDelete: Restrict)
+  status String        @default("ACTIVE") // ACTIVE | SUSPENDED | RETIRED
+
+  // ── Reported by the heartbeat ─────────────────────────────────────────────
+  // The immutable image tag it is running (vaaniyantra/runtime:2026.09.02+a1b2c3d).
+  // Never "latest": a client's box has to be able to say precisely what it runs.
+  version    String?
+  lastSeenAt DateTime?
+  lastIp     String?
+  lastError  String?
+
+  // Entitlement: the install fetches a short-lived signed token and refuses to
+  // place calls without one. A rooted client can patch that out — this is
+  // EVIDENCE, not a control. Set this and the next fetch is refused.
+  entitlementRevokedAt DateTime?
+  notes                String?
+
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  keys      DeploymentKey[]
+
+  @@index([orgId])
+}
+
+// A signing key for one deployment.
+//
+// ENCRYPTED, NOT HASHED — the one place this codebase deliberately departs from
+// how ApiKey stores its secret. An HMAC has to be recomputed on our side, so we
+// need the plaintext back; a hash would make verification impossible. Handled
+// exactly like Integration.secret (src/lib/crypto.ts).
+//
+// Several may be live at once. That is what makes rotation possible without a
+// flag day: issue the new key, let both verify, then revoke the old.
+model DeploymentKey {
+  id           String     @id @default(cuid())
+  deploymentId String
+  deployment   Deployment @relation(fields: [deploymentId], references: [id], onDelete: Cascade)
+  label        String
+  secretEnc    String
+  createdAt    DateTime   @default(now())
+  lastUsedAt   DateTime?
+  revokedAt    DateTime?
+
+  @@index([deploymentId])
+}
+
+// One row per signed request accepted, keyed by the nonce it carried.
+//
+// THE INSERT IS THE CHECK. A replayed request loses to the unique constraint —
+// Prisma P2002 means "seen before", which is a rejection rather than an error.
+// The same pattern as PaymentApplication.orderId and UsageEvent's exactly-once
+// key: a claim arbitrated by the database, not by a read-then-write that two
+// concurrent requests can both win.
+//
+// `expiresAt` is the clock-skew window, so the table stays small: a nonce older
+// than the window cannot be replayed anyway, because the timestamp check
+// rejects it first.
+model DeploymentNonce {
+  id           String   @id @default(cuid())
+  deploymentId String
+  nonce        String
+  seenAt       DateTime @default(now())
+  expiresAt    DateTime
+
+  @@unique([deploymentId, nonce])
+  @@index([expiresAt])
+}
+
+// One row per gateway order we have actually applied to an organization.
+//
+// This exists because the return URL (/api/billing/cashfree/return) is
+// unauthenticated by necessity and takes order_id from the query string, so a
+// customer can re-submit an order of their own that Cashfree still reports as
+// PAID. Comparing against Organization.cashfreeOrderId was not enough: that
+// column holds only the MOST RECENT order, so starting a fresh checkout moved
+// it aside and let the previous, genuinely-paid order be applied again — once
+// per abandoned checkout, indefinitely.
+//
+// The unique constraint on orderId is the actual idempotency mechanism: the
+// insert is the claim, so a replay loses to the constraint rather than to a
+// comparison that can be manoeuvred out of the way. It is written in the same
+// transaction as the org update, so a failed apply leaves no claim behind and
+// the payment can still be retried.
+model PaymentApplication {
+  id        String       @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  // The gateway's order id. Unique across the table, not just per org — an
+  // order belongs to exactly one organization.
+  orderId   String       @unique
+  plan      String?
+  amountInr Float?
+  appliedAt DateTime     @default(now())
+
+  @@index([orgId])
+}
+
+// A month's billed overage (call minutes past the plan allowance) for an org.
+// Created by the monthly sweep; `charged` once the charge is raised on the org's
+// Cashfree mandate and `paid` when the webhook confirms it settled, `manual`
+// when there is no mandate to charge (founder invoices offline — always the
+// case while the platform is on Payment Gateway only), `failed` when Cashfree
+// rejected the charge.
+// What plan an org held, and from when.
+//
+// The overage sweep runs on the 2nd and 5th and bills the PREVIOUS month, so it
+// has to know what the org was on *then*. It used to read `organization.plan`,
+// which is what the org is on *now*: downgrading to free on the 1st erased the
+// month's overage entirely, and upgrading billed the old month at the new
+// plan's rate. Neither is recoverable after the fact without this history.
+//
+// Append-only. One row per plan change, plus one seeded lazily the first time an
+// org's plan is resolved so orgs that predate this table have a starting point.
+model PlanChange {
+  id        String       @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  plan      String
+  changedAt DateTime     @default(now())
+  // checkout | self_serve | admin | cancel | subscription | seed
+  source    String?
+
+  @@index([orgId, changedAt])
+}
+
+// A prepaid purchase of call minutes.
+//
+// One row per top-up, written only once Cashfree confirms the payment — the
+// row IS the receipt, and `organization.prepaidMinutes` is the running balance
+// it feeds. Kept as history rather than folded into the counter so a balance can
+// be explained ("you bought 2,000 on 3 September at ₹3.5") months later, and so
+// the rate each purchase was sold at survives a later change to the rate.
+model MinuteTopUp {
+  id             String       @id @default(cuid())
+  orgId          String
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  minutes        Int
+  // The ₹/min this purchase was sold at. Frozen here: minutes bought at ₹3.5
+  // stay bought even if the org later moves to the volume rate.
+  ratePerMinute  Float
+  amountInr      Float // pre-tax value of the purchase
+  // The gateway order that paid for it. Unique, so a replayed webhook cannot
+  // credit the same minutes twice.
+  gatewayOrderId String?      @unique
+  createdAt      DateTime     @default(now())
+
+  @@index([orgId, createdAt])
+}
+
+model OverageCharge {
+  id               String       @id @default(cuid())
+  orgId            String
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  month            String // "YYYY-MM" (UTC calendar month the overage occurred in)
+  minutes          Int
+  amountInr        Float // total billed = call-minute overage + addonInr
+  addonInr         Float        @default(0) // flat monthly add-on fees (e.g. WhatsApp chat)
+  // Minutes of this month that the org's prepaid balance absorbed, and by which
+  // `organization.prepaidMinutes` was decremented when this row was written.
+  // Recorded for the same reason as `plan`: without it, a balance that fell by
+  // 2,000 minutes cannot be attributed to the months that spent them.
+  prepaidMinutes   Float        @default(0)
+  // The ₹/min those prepaid minutes were SOLD at, weighted across the top-ups
+  // they were drawn from (MinuteTopUp.ratePerMinute, FIFO). Prepaid revenue is
+  // recognised in the month the minutes are spoken, and it has to be recognised
+  // at the price they were bought at — not at whatever the rate happens to be
+  // when they are consumed, which is a different number the day a client is
+  // moved onto a rate card. Null on rows written before this existed, and on
+  // months that consumed nothing.
+  prepaidRateInr   Float?
+  // The plan this charge was PRICED with, resolved from PlanChange history for
+  // the month being swept — not whatever the org is on when you read this row.
+  // Recorded so a charge can be explained months later.
+  plan             String?
+  // pending | charged (raised on the mandate) | paid | manual | failed |
+  // prepaid (nothing to bill: the balance covered the whole month)
+  status           String
+  gatewayPaymentId String? // payment_id sent to Cashfree (ovg_<id>)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@unique([orgId, month])
+}
+
+// A tax invoice for one settled payment.
+//
+// Written when a payment is confirmed, and never mutated afterwards: an issued
+// invoice is a statutory record, so corrections are a new document rather than
+// an edit. Every figure is stored rather than recomputed on read, because the
+// GST rate, the org's address, and the plan price all change over time and an
+// invoice must always render exactly as it was issued.
+model Invoice {
+  id     String       @id @default(cuid())
+  // Human-facing sequential number, e.g. "VY/2026-27/0001". Unique per the GST
+  // requirement for a consecutive series.
+  number String       @unique
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  plan        String
+  description String
+  periodStart DateTime
+  periodEnd   DateTime
+
+  // Money, all in INR. subtotal is pre-tax; discount is any promo applied.
+  subtotalInr Float
+  discountInr Float @default(0)
+  taxableInr  Float // subtotal - discount, the value GST is charged on
+  cgstInr     Float @default(0)
+  sgstInr     Float @default(0)
+  igstInr     Float @default(0)
+  totalInr    Float // what the customer actually paid
+  taxRate     Float @default(0)
+
+  // Frozen copies of both parties' details as they stood at issue.
+  sellerGstin   String?
+  sellerName    String?
+  sellerAddress String?
+  buyerName     String?
+  buyerGstin    String?
+  buyerAddress  String?
+  buyerState    String?
+
+  promoCode      String?
+  gatewayOrderId String? // Cashfree order this settles
+  paymentMethod  String? // upi | card | netbanking …
+  status         String   @default("paid") // paid | refunded
+  issuedAt       DateTime @default(now())
+
+  @@index([orgId, issuedAt])
+}
+
+// A discount code applied at checkout. Founder-created in /admin; used for
+// launch offers, and for buying a cheap real transaction to test the live
+// payment path without editing the public price list.
+//
+// Exactly one of percentOff / fixedPriceInr is set: percentOff is the normal
+// promo shape, fixedPriceInr overrides the plan price outright (what a ₹10 test
+// code needs, where a percentage would be awkward).
+//
+// Discounts apply to ONE-TIME orders only. A mandate carries its amount for its
+// whole life, so honouring a promo in subscription mode would silently give a
+// permanent discount rather than a first-month one.
+model PromoCode {
+  id             String    @id @default(cuid())
+  code           String    @unique // stored uppercase; matched case-insensitively
+  description    String?
+  percentOff     Int? // 1-100
+  fixedPriceInr  Float? // replaces the plan price entirely (>= 1, Cashfree's floor)
+  // null = every paid plan. Otherwise a comma-separated list of plan keys.
+  plans          String?
+  maxRedemptions Int? // null = unlimited
+  timesRedeemed  Int       @default(0)
+  expiresAt      DateTime?
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+}
+
+// A third-party credential (e.g. Deepgram / ElevenLabs API key) the org supplies
+// so its agents can use that provider without server-level env vars. The secret
+// is encrypted at rest (AES-256-GCM); only a last-four hint is shown in the UI.
+model Integration {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  provider    String // deepgram | elevenlabs | gemini | googleCloud | googleCalendar | hubspot | whatsapp
+  secret      String // encrypted
+  lastFour    String
+  enabled     Boolean      @default(true)
+  // Whose connection this is. "" = the org-level shared connection (every
+  // provider except googleCalendar only ever uses this); a user id = that
+  // doctor's own Google Calendar, so their patients land on their calendar.
+  //
+  // A sentinel rather than NULL, deliberately. Postgres treats NULLs as
+  // distinct, so UNIQUE(orgId, provider, userId) would NOT constrain the
+  // org-level rows and duplicate connections could appear; and Prisma's
+  // compound-unique `where` input rejects null, which would make
+  // saveCalendarConfig's upsert inexpressible. The default also means an
+  // existing single Google connection simply becomes the shared one on push,
+  // with no backfill.
+  userId      String       @default("")
+  createdById String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@unique([orgId, provider, userId])
+  @@index([orgId])
+}
+
+// A pending invitation to join an organization (we own invites; Firebase only
+// handles identity). The invitee accepts via a tokenized link.
+model Invitation {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  email       String
+  role        String       @default("MEMBER") // OWNER | ADMIN | MEMBER | VIEWER
+  token       String       @unique
+  status      String       @default("PENDING") // PENDING | ACCEPTED | REVOKED | EXPIRED
+  invitedById String?
+  expiresAt   DateTime
+  createdAt   DateTime     @default(now())
+
+  @@unique([orgId, email])
+  @@index([orgId])
+}
+
+// Phase 7+ — platform-level (super-admin) configuration: a simple key/value
+// store for the founder's managing dashboard. Holds rotatable secrets (e.g. the
+// platform Gemini API key, encrypted) and JSON config (e.g. plan price/limit
+// overrides). Not org-scoped — there is one platform.
+model PlatformConfig {
+  key       String   @id
+  value     String // plaintext JSON for config; AES-256-GCM ciphertext when isSecret
+  isSecret  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+// A sub-tenant inside an Organization. All domain data is scoped to a workspace.
+model Workspace {
+  id        String       @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name      String
+  slug      String
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  agents         Agent[]
+  phoneNumbers   PhoneNumber[]
+  documents      Document[]
+  calls          Call[]
+  webhooks       Webhook[]
+  twilioAccounts TwilioAccount[]
+  exotelAccounts ExotelAccount[]
+  plivoAccounts  PlivoAccount[]
+  contacts       Contact[]
+  portals        Portal[]
+
+  @@unique([orgId, slug])
+  @@index([orgId])
+}
+
+// #1: a customer-supplied Twilio account (BYO credentials). A workspace can
+// connect several — each holds its own SID + auth token (encrypted at rest) and
+// owns the numbers imported/provisioned under it. One per workspace is marked
+// default for new provisioning. Falls back to server env Twilio when none exist.
+model TwilioAccount {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  label       String
+  accountSid  String
+  authToken   String // encrypted (AES-256-GCM)
+  isDefault   Boolean   @default(false)
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  numbers PhoneNumber[]
+
+  @@unique([workspaceId, accountSid])
+  @@index([workspaceId])
+}
+
+// A customer-supplied Exotel account (BYO credentials), the Exotel sibling of
+// TwilioAccount. Exotel authenticates with an API Key + API Token (Basic auth)
+// scoped to an Account SID, and the REST host depends on the account's region
+// subdomain (e.g. api.in.exotel.com / api.exotel.com / api.sg.exotel.com).
+// The apiToken is encrypted at rest; the UI never sees it.
+model ExotelAccount {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  label       String
+  accountSid  String
+  apiKey      String
+  apiToken    String // encrypted (AES-256-GCM)
+  subdomain   String    @default("api.exotel.com") // region host, no scheme
+  // Optional Exotel App (exoml flow) URL containing the Voicebot applet, used as
+  // the connect target for OUTBOUND calls. Inbound doesn't need it.
+  appUrl      String?
+  isDefault   Boolean   @default(false)
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  numbers PhoneNumber[]
+
+  @@unique([workspaceId, accountSid])
+  @@index([workspaceId])
+}
+
+// A customer-supplied Plivo account (BYO credentials), the low-cost sibling of
+// TwilioAccount (Plivo tends to be materially cheaper than Twilio/Exotel).
+// Plivo authenticates with an Auth ID + Auth Token (Basic auth) against a single
+// global host (api.plivo.com). Inbound routing goes through a Plivo Application
+// (answer_url); we create/reuse one per account and cache its id in `appId`.
+// The authToken is encrypted at rest; the UI never sees it.
+model PlivoAccount {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  label       String
+  authId      String
+  authToken   String // encrypted (AES-256-GCM)
+  // Cached id of the Plivo Application (answer_url) we link numbers to, so we
+  // don't re-create it on every number import.
+  appId       String?
+  isDefault   Boolean   @default(false)
+  createdById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  numbers PhoneNumber[]
+
+  @@unique([workspaceId, authId])
+  @@index([workspaceId])
+}
+
+// ── Phase 6: Integrations ───────────────────────────────────────────────────
+// An outbound webhook endpoint. On subscribed events (e.g. call.completed) we
+// POST a signed JSON payload to `url`. The `secret` signs an HMAC-SHA256 header
+// so the receiver can verify authenticity.
+model Webhook {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  workspace      Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  // Delivery format: "generic" = signed JSON POST; "slack" = Slack Incoming
+  // Webhook (Block Kit formatted message, no HMAC).
+  type           String    @default("generic")
+  url            String
+  description    String?
+  events         String[]  @default([]) // e.g. ["call.completed", "call.failed"]
+  secret         String // HMAC signing secret (shown to the user)
+  enabled        Boolean   @default(true)
+  // Last delivery result, for the UI.
+  lastStatus     Int? // HTTP status of the last attempt (0 = network error)
+  lastError      String?
+  lastDeliveryAt DateTime?
+  failureCount   Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([workspaceId])
+}
+
+// A user's membership in an organization, carrying their role.
+model Membership {
+  id        String       @id @default(cuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  role      String       @default("MEMBER") // OWNER | ADMIN | MEMBER | VIEWER
+  createdAt DateTime     @default(now())
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+// A hashed API key for the public REST API. Scoped to an organization.
+model ApiKey {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name        String
+  // We store only a SHA-256 hash of the key; the plaintext is shown once.
+  hashedKey   String       @unique
+  prefix      String // e.g. "vk_live_" for display
+  lastFour    String // last 4 chars for identification in the UI
+  scopes      String[]     @default([])
+  createdById String?
+  createdBy   User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  lastUsedAt  DateTime?
+  expiresAt   DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime     @default(now())
+
+  @@index([orgId])
+}
+
+// An append-only record of significant actions, for the audit log viewer.
+model AuditLog {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actorUserId String?
+  actorEmail  String?
+  action      String // e.g. "agent.created", "apikey.revoked", "member.invited"
+  targetType  String? // e.g. "Agent", "ApiKey"
+  targetId    String?
+  metadata    Json?
+  ip          String?
+  createdAt   DateTime     @default(now())
+
+  @@index([orgId, createdAt])
+}
+
+// ─── Domain (scoped to a Workspace) ──────────────────────────────────────────
+
+// An AI phone agent: its persona, voice, language, and behavior prompt.
+model Agent {
+  id                  String    @id @default(cuid())
+  workspaceId         String
+  workspace           Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  // Creator, for attribution (nullable so a deleted user doesn't orphan agents).
+  userId              String?
+  user                User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  name                String
+  description         String?
+  systemPrompt        String
+  greeting            String?
+  language            String    @default("en-IN")
+  voice               String    @default("en-IN-Standard-A")
+  // How the agent chooses the spoken language:
+  //   single — always `language`
+  //   hybrid — a natural mix of English + `language` (e.g. Hinglish)
+  //   auto   — pick per call from the caller's location (falls back to `language`)
+  languageMode        String    @default("single") // single | hybrid | auto
+  // TTS engine. "google" is built-in (always available); the others are
+  // integrations that require their API key to be configured.
+  voiceProvider       String    @default("google") // (legacy/dormant — Gemini Live is default)
+  voiceStages         Json? // (legacy/dormant — greeting/closing voice removed)
+  // ── v2 agent overhaul ──
+  // Gemini Live prebuilt voice (Aoede, Puck, …) used by the realtime pipeline.
+  geminiVoice         String    @default("Aoede")
+  // What kind of agent (drives prompt generation + defaults).
+  agentType           String    @default("general") // receptionist | campaigning | support | sales | general
+  // #9: free-text industry label when agentType = "other" (e.g. "Veterinary clinic").
+  industryLabel       String?
+  // When the agent should wrap up and end the call (used in the prompt + the
+  // end_call tool). Empty = let the caller drive.
+  endCallInstructions String?
+  // Compliance: when true the agent announces at the start of every call that
+  // the call may be recorded (wired into the system instruction + greeting).
+  recordingDisclosure Boolean   @default(false)
+  direction           String    @default("BOTH") // INBOUND | OUTBOUND | BOTH
+  status              String    @default("ACTIVE") // ACTIVE | PAUSED
+  maxCallSeconds      Int       @default(600)
+  temperature         Float     @default(0.6)
+
+  // ── Phase 1 agent depth ──
+  // Business hours: { enabled, timezone, days: [{open,close,closed}] } indexed
+  // by JS getDay() (0=Sun..6=Sat). Inbound calls outside hours hear afterHoursMessage.
+  businessHours     Json?
+  afterHoursMessage String?
+  // Spoken/instructed when the agent is unsure or cannot help.
+  fallbackMessage   String?
+  // Live call transfer to a human/number when the caller asks for one.
+  transferEnabled   Boolean @default(false)
+  transferNumber    String?
+  transferMessage   String?
+  transferTriggers  String? // comma-separated caller phrases that trigger a transfer
+  // Custom variables injected into the prompt/greeting via {{key}} templating.
+  variables         Json? // [{ key, value }]
+  // Bring-your-own Gemini key for THIS agent, encrypted at rest (lib/crypto).
+  // Resolution order at call time is agent > org integration > platform key, so
+  // a demo agent can bill its own key while every other agent keeps using the
+  // central one. Never returned to the client — the API sends `hasGeminiKey`.
+  geminiApiKey      String?
+  // ── Phase A connectors: live appointment booking ──
+  // { enabled, calendarId?, timezone?, serviceName?, serviceDurationMin?,
+  //   lookaheadDays?, dailyStart?, dailyEnd? }. When enabled AND the org has
+  //   Google Calendar connected, the agent gets check_availability/book_appointment
+  //   tools it can call mid-call to book a real, confirmed slot.
+  bookingConfig     Json?
+  // ── Outcome engine: what the agent captures + how leads/orders/reservations
+  // are routed to the caller and the owner. Owner-editable, seeded from the
+  // vertical preset (VERTICAL_TEMPLATES[vertical].outcome). Shape:
+  // { type, captures:[{key,label,required?}], callerTemplate, ownerTemplate,
+  //   ownerNumbers:[E.164], deliver:{ whatsapp, inApp, sheet } }.
+  outcomeConfig     Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  phoneNumbers   PhoneNumber[]
+  calls          Call[]
+  knowledgeLinks AgentKnowledge[]
+  outcomes       Outcome[]
+  monthlySheets  MonthlySheet[]
+  portals        Portal[]
+
+  @@index([workspaceId])
+  @@index([userId])
+}
+
+// A provisioned phone number, optionally bound to an agent for inbound calls.
+model PhoneNumber {
+  id                String         @id @default(cuid())
+  workspaceId       String
+  workspace         Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId            String?
+  user              User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
+  e164              String         @unique
+  label             String?
+  provider          String         @default("twilio")
+  providerSid       String?
+  // #1: which customer Twilio account owns this number (null = server env Twilio).
+  twilioAccountId   String?
+  twilioAccount     TwilioAccount? @relation(fields: [twilioAccountId], references: [id], onDelete: SetNull)
+  // Which customer Exotel account owns this number, when provider = "exotel".
+  exotelAccountId   String?
+  exotelAccount     ExotelAccount? @relation(fields: [exotelAccountId], references: [id], onDelete: SetNull)
+  // Which customer Plivo account owns this number, when provider = "plivo".
+  plivoAccountId    String?
+  plivoAccount      PlivoAccount?  @relation(fields: [plivoAccountId], references: [id], onDelete: SetNull)
+  agentId           String?
+  agent             Agent?         @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  // Outbound caller-ID display name (also shown as the number's friendly name).
+  callerIdName      String?
+  // Inbound routing: when forwardTo is set, inbound calls are <Dial>-forwarded
+  // to that E.164 number instead of being handled by the assigned agent.
+  forwardTo         String?
+  // When false, inbound calls to this number are politely rejected.
+  inboundEnabled    Boolean        @default(true)
+  // Whether the provider's voice webhook has been pointed at our server.
+  webhookConfigured Boolean        @default(false)
+  // When true, this number is the org's WhatsApp sender — outbound WhatsApp
+  // (confirmations, owner alerts, follow-up chat) routes through its own
+  // Twilio/Exotel account. The number must be WhatsApp-enabled at the provider.
+  whatsappEnabled   Boolean        @default(false)
+  createdAt         DateTime       @default(now())
+
+  calls Call[]
+
+  @@index([workspaceId])
+  @@index([agentId])
+  @@index([twilioAccountId])
+  @@index([exotelAccountId])
+  @@index([plivoAccountId])
+}
+
+// A knowledge-base document the agent can answer from (RAG).
+model Document {
+  id          String    @id @default(cuid())
+  workspaceId String
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  userId      String?
+  user        User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  name        String
+  mimeType    String
+  sizeBytes   Int       @default(0)
+  status      String    @default("PROCESSING") // PROCESSING | READY | FAILED
+  // Where this document came from: an uploaded file, a crawled web page, a
+  // manually entered FAQ, or pasted text. Drives the UI badge + re-crawl.
+  sourceType  String    @default("FILE") // FILE | URL | FAQ | TEXT
+  sourceUrl   String? // set when sourceType = URL
+  // For sourceType = FAQ: the editable [{question, answer}] pairs. Each pair is
+  // also embedded as its own chunk for precise retrieval.
+  faqItems    Json?
+  rawText     String?
+  createdAt   DateTime  @default(now())
+
+  chunks         DocumentChunk[]
+  knowledgeLinks AgentKnowledge[]
+
+  @@index([workspaceId])
+}
+
+// A retrievable chunk with its embedding (JSON-encoded number[]; move to
+// pgvector for scale now that we're on Postgres).
+model DocumentChunk {
+  id         String   @id @default(cuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  index      Int
+  content    String
+  embedding  String?
+
+  @@index([documentId])
+}
+
+// Many-to-many: which documents an agent is allowed to use.
+model AgentKnowledge {
+  agentId    String
+  agent      Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, documentId])
+  @@index([documentId])
+}
+
+// A single phone call handled by an agent.
+model Call {
+  id            String       @id @default(cuid())
+  // Nullable: an inbound call may arrive before routing resolves a workspace.
+  workspaceId   String?
+  workspace     Workspace?   @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  userId        String?
+  user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  agentId       String?
+  agent         Agent?       @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  phoneNumberId String?
+  phoneNumber   PhoneNumber? @relation(fields: [phoneNumberId], references: [id], onDelete: SetNull)
+
+  direction   String // INBOUND | OUTBOUND
+  status      String  @default("QUEUED") // QUEUED | RINGING | IN_PROGRESS | COMPLETED | FAILED | NO_ANSWER | BUSY
+  fromNumber  String
+  toNumber    String
+  providerSid String?
+  language    String  @default("en-IN")
+
+  startedAt       DateTime?
+  endedAt         DateTime?
+  durationSec     Int       @default(0)
+  recordingUrl    String?
+  summary         String?
+  endedReason     String?
+  // Post-call analysis (one LLM pass at call end, alongside the summary).
+  sentiment       String? // POSITIVE | NEUTRAL | NEGATIVE
+  sentimentScore  Float? // -1.0 (very negative) .. 1.0 (very positive)
+  topics          Json? // string[] of key topics discussed
+  // Phase 5B: values the agent's workflow "collect" steps captured, extracted
+  // from the transcript at call end. { [variable]: value|null }.
+  collectedData   Json?
+  // Phase 5C: ids of the workflow nodes the conversation reached (inferred at
+  // call end), for per-step funnel analytics. string[].
+  // Never written by anything. Kept as a column so the migration stays additive;
+  // it is no longer shipped in the call.completed webhook, where it was always
+  // null while the documented sample advertised real values.
+  workflowReached Json?
+
+  // Per-call Gemini Live usage, summed from the usageMetadata report that
+  // arrives on every turn. Live re-bills the whole session window each turn, so
+  // llmPromptTokens is the BILLED total and runs far above the size of the
+  // final context. Audio and text price ~6x apart, hence the audio split:
+  // text input = llmPromptTokens - llmAudioInTokens (same on the output side).
+  // llmModel is recorded because the admin dashboard can override the env
+  // default, so the model that ran is not always the model in .env.
+  llmModel          String?
+  llmTurns          Int     @default(0)
+  llmPromptTokens   Int     @default(0)
+  llmResponseTokens Int     @default(0)
+  llmAudioInTokens  Int     @default(0)
+  llmAudioOutTokens Int     @default(0)
+  // Rupees, priced at src/lib/voice/usage.ts rates when the call ended. Stored
+  // rather than derived so historical margin survives a rate change.
+  llmCostInr        Float?
+
+  createdAt DateTime @default(now())
+
+  transcript TranscriptTurn[]
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([agentId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// One utterance in a call transcript.
+model TranscriptTurn {
+  id        String   @id @default(cuid())
+  callId    String
+  call      Call     @relation(fields: [callId], references: [id], onDelete: Cascade)
+  role      String // CALLER | AGENT | SYSTEM
+  text      String
+  atMs      Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([callId])
+}
+
+// Phase B — a booked appointment, persisted so we can send reminders and let
+// patients reschedule/cancel. Created by the book_appointment tool, by the
+// patient chatbot, or by staff in the app; the Google Calendar event is the
+// external source of truth (calendarEventId links them).
+model Appointment {
+  id                    String   @id @default(cuid())
+  orgId                 String
+  workspaceId           String
+  agentId               String?
+  callId                String?
+  customerName          String
+  customerNumber        String? // E.164, for reminders + lookup
+  // The patient this booking is for. Historically an appointment had no link to
+  // a Contact at all and the two were matched by comparing phone strings — that
+  // silently broke whenever a number was edited, and returned nothing for a
+  // patient with no number on file. SetNull rather than Cascade: deleting a
+  // patient record must never quietly delete their appointment history.
+  contactId             String?
+  contact               Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  // The patient's UHID as it stood when this was booked. Denormalised so lists,
+  // exports and the appointment.created webhook can show a patient number
+  // without a join. Null for bookings taken without a phone number, and for
+  // rows created before patient numbering existed.
+  patientNo             String?
+  // #6: which expert/doctor/stylist this booking is with (null = any/shared).
+  //
+  // Kept as a historical SNAPSHOT now that `doctorId` exists. It was the only
+  // link for a long time, and it was matched by case-insensitive substring on
+  // free text — so it must not be deleted (old rows have nothing else) and must
+  // not be trusted for new logic.
+  expertName            String?
+  // The doctor this booking is with. Null for rows created before doctors became
+  // first-class, and for bookings taken with no doctor named.
+  //
+  // SetNull, never Cascade: removing a doctor from the clinic must not delete
+  // the appointment history of patients they saw.
+  doctorId              String?
+  doctor                Doctor?  @relation(fields: [doctorId], references: [id], onDelete: SetNull)
+  service               String   @default("appointment")
+  startAt               DateTime
+  endAt                 DateTime
+  timezone              String?
+  calendarId            String?
+  // Which Google connection owns `calendarId`. "" / null = the org's shared
+  // connection. Essential once doctors bring their own accounts: `calendarId`
+  // is very often the literal "primary", which resolves to a DIFFERENT calendar
+  // depending on whose token is used — so rescheduling or cancelling without
+  // knowing the owner would patch the wrong calendar, or 404. Existing rows are
+  // null and correctly fall back to the shared connection they were booked on.
+  calendarUserId        String?
+  calendarEventId       String?
+  channel               String   @default("sms") // sms | whatsapp — how to message the customer
+  status                String   @default("CONFIRMED") // CONFIRMED | CANCELLED
+  // Did the booking confirmation actually reach the patient?
+  //   null  — not attempted (no number on the booking)
+  //   true  — delivered
+  //   false — every sender and template was refused, and nothing arrived
+  // The agent tells the caller on the phone that a WhatsApp is coming, so a
+  // silent failure here is a patient who believes they have a confirmation and
+  // a clinic with no way to know they do not. Most often an org whose template
+  // Meta has not approved yet.
+  confirmationDelivered Boolean?
+  remind24Sent          Boolean  @default(false)
+  remind1Sent           Boolean  @default(false)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([status, startAt])
+  @@index([workspaceId])
+  @@index([customerNumber])
+  @@index([contactId])
+  // Overlap detection reads (doctor, status, time range) on every availability
+  // check and every claim, so the doctor must lead the index.
+  @@index([doctorId, status, startAt, endAt])
+}
+
+// ─── Doctors ─────────────────────────────────────────────────────────────────
+
+// A doctor/consultant who can be booked, and who owns a calendar.
+//
+// Doctors used to exist ONLY as free-text entries in `Agent.bookingConfig.experts`
+// (`{name, calendarId?, userId?}`), matched at booking time by case-insensitive
+// substring on the name. That could not carry a schedule, could not own time off,
+// could not be scoped to a login, and quietly matched the wrong person whenever
+// two doctors shared a surname.
+//
+// `userId` is REQUIRED: a doctor is a team member with an account, because they
+// sign in to manage their own calendar. Restrict rather than Cascade — deleting a
+// User out from under a doctor with appointment history should fail loudly.
+model Doctor {
+  id          String  @id @default(cuid())
+  orgId       String
+  workspaceId String
+  // OPTIONAL. A doctor is a real person the clinic books patients with; whether
+  // they have signed in is a separate question, and usually the answer is "not
+  // yet". Every expert in production is name-only, so requiring an account would
+  // mean no clinic could have per-doctor calendars until each doctor accepted an
+  // invite. Linking one later unlocks self-service and the Google mirror.
+  //
+  // Nullability is also what makes the unique below correct: Postgres treats
+  // NULLs as distinct, so an org may hold many unlinked doctors while two can
+  // never share one account. (Integration next door uses a "" sentinel for the
+  // exact opposite reason — there, NULLs had to collide.)
+  userId      String?
+  user        User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+  // Shown to patients and read out by the agent. Kept separate from User.name so
+  // a clinic can present "Dr. A. Sharma" without renaming someone's account.
+  displayName String
+  // IANA zone. Falls back to the agent's booking timezone when unset, so a
+  // single-timezone clinic never has to fill this in.
+  timezone    String?
+  // Soft-retire: a doctor who has left keeps their history and stops being
+  // offered. Deleting them would strand every appointment they ever took.
+  active      Boolean @default(true)
+  // Distinct from `active`, and the difference matters on the day someone
+  // accepts an invite: `active` means still employed, `bookable` means the agent
+  // may offer them to a caller. A doctor created by accepting an invite starts
+  // NOT bookable, so a half-finished profile is never read out to a patient as
+  // "manikanta". Filling in a name and specialisation flips it. Rows an admin
+  // types on the Team page keep the default, so that path is unchanged.
+  bookable    Boolean @default(true)
+
+  // ── The profile a doctor fills in themselves ──────────────────────────────
+  //
+  // Only `displayName` and `specialisation` are ever given to the AI. The rest
+  // exist for the Team page and the patient-facing surfaces; feeding a bio into
+  // a call prompt would cost tokens on every turn and give the model prose to
+  // improvise from.
+  specialisation     String?
+  qualifications     String?
+  bio                String?
+  photoUrl           String?
+  phone              String?
+  // How we recognise that a new DOCTOR user is the unlinked row an admin
+  // already typed in, so their schedule and history are claimed rather than
+  // duplicated. Deliberately NOT unique: adding a unique constraint to a live
+  // table that may already hold duplicates fails `db push`, and the claim only
+  // acts on an unambiguous single match anyway.
+  email              String?
+  // Set the first time the doctor saves their own profile. Drives the setup
+  // prompt, and distinguishes "invited, never showed up" from "ready".
+  profileCompletedAt DateTime?
+  // A named calendar inside the clinic's shared Google account, when the doctor
+  // does not connect their own. Carried over from the retired
+  // bookingConfig.experts[].calendarId — without it, a clinic running several
+  // named calendars in one Google account silently loses per-doctor routing.
+  calendarId         String?
+
+  schedule     DoctorSchedule?
+  timeOff      DoctorTimeOff[]
+  appointments Appointment[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // One doctor row per person per org. A user can be a doctor in two different
+  // clinics, which the org key allows.
+  @@unique([orgId, userId])
+  @@index([orgId, active])
+  @@index([workspaceId])
+}
+
+// A doctor's weekly working hours.
+//
+// `days` deliberately reuses the EXISTING business-hours shape —
+// `{ enabled, timezone, days: [{open, close, closed}] }` indexed by JS getDay()
+// (0=Sun..6=Sat) — already defined, defaulted and parsed in
+// src/lib/agent-behavior.ts and validated in src/lib/validation.ts. A second
+// schedule format in one codebase is how two calendars start disagreeing about
+// when a clinic is open.
+model DoctorSchedule {
+  id       String @id @default(cuid())
+  doctorId String @unique
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  days Json
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// Leave, blocks, and anything else that makes a doctor unavailable.
+//
+// This is the native replacement for the all-day Google event that has carried
+// leave until now — a mechanism that only worked if the doctor had connected
+// Google, and that was ignored entirely for multi-per-slot agents because
+// free/busy was never queried for them.
+model DoctorTimeOff {
+  id       String @id @default(cuid())
+  orgId    String
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id], onDelete: Cascade)
+
+  startAt DateTime
+  endAt   DateTime
+  // A whole-day block. Stored as well as implied by the range so that "on leave
+  // Tuesday" survives a timezone change intact.
+  allDay  Boolean  @default(false)
+  title   String?
+  // Private to the clinic — never read out by the agent or shown to a patient.
+  reason  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([doctorId, startAt, endAt])
+  @@index([orgId])
+}
+
+// A structured result captured from a call — the generic backbone behind owner
+// notifications, the in-app "Updates" feed, and the monthly Drive sheet. What
+// gets captured is driven by the agent's outcomeConfig (seeded per vertical):
+// a clinic logs an `appointment`, a restaurant a `reservation`/`order`, a
+// real-estate agent a `lead`, etc. `fields` holds the captured key/value pairs.
+model Outcome {
+  id           String   @id @default(cuid())
+  orgId        String
+  workspaceId  String
+  agentId      String?
+  agent        Agent?   @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  callId       String?
+  vertical     String? // agent's vertical/agentType at capture time
+  type         String // lead | appointment | reservation | order | enquiry | callback | custom
+  fields       Json // captured { key: value } pairs
+  callerName   String?
+  callerNumber String? // E.164
+  createdAt    DateTime @default(now())
+
+  @@index([workspaceId, createdAt])
+  @@index([agentId, createdAt])
+}
+
+// DEPRECATED — the Google Drive/Sheets integration is gone (outcomes are
+// exported as CSV from Reports instead). No code references this model any
+// more. It is retained rather than dropped so `prisma db push` stays a purely
+// additive, non-destructive operation on live databases; dropping a table is
+// what forces --accept-data-loss. Safe to delete once every environment has
+// been migrated deliberately.
+//
+// Was: the per-agent, per-month Google Sheet that owner outcomes were appended
+// to (name "{Agent} — Leads — {YYYY-MM}"), created once and reused.
+model MonthlySheet {
+  id            String   @id @default(cuid())
+  agentId       String
+  agent         Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  month         String // "YYYY-MM" (UTC)
+  spreadsheetId String
+  createdAt     DateTime @default(now())
+
+  @@unique([agentId, month])
+}
+
+// A WhatsApp number the PLATFORM owns (registered under our WABA) and hands out
+// to businesses so they don't do any Meta/Twilio setup themselves. Assigned to
+// one org at a time; the org's display name rides on it. Founder adds numbers to
+// the pool in /admin (with each number's Cloud API phone_number_id).
+model PlatformWhatsappNumber {
+  id            String   @id @default(cuid())
+  phoneNumberId String   @unique // Cloud API phone-number id, under our WABA
+  displayPhone  String // human-readable +E.164
+  assignedOrgId String? // null = available in the pool
+  displayName   String? // the assigned business's WhatsApp display name
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([assignedOrgId])
+}
+
+// Short rolling history of a caller's WhatsApp follow-up chat, so the AI has
+// context across a multi-message conversation. Keyed by the caller's WhatsApp
+// number within an org; only the most recent turns are read back.
+model WhatsappTurn {
+  id        String   @id @default(cuid())
+  orgId     String
+  waId      String // caller's WhatsApp number (E.164, no +)
+  role      String // user | model
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([orgId, waId, createdAt])
+}
+
+// ─── Customer portal ─────────────────────────────────────────────────────────
+//
+// Built for clinics first: after a consultation the doctor files a visit record
+// (prescription, advice, scans) against the patient, and the patient can reopen
+// the clinic's own chatbot later to ask about it. The tables are named for the
+// general case (Contact / VisitRecord) so the same machinery can back a salon's
+// service history or a workshop's job cards without a rename migration — only
+// the UI wording is clinic-specific.
+
+// A person the business serves — a clinic's patient, a salon's client. Created
+// automatically when an agent books an appointment (keyed on the phone number
+// the booking was made from) and editable by staff afterwards.
+model Contact {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  name        String
+  // E.164. The identity anchor: bookings, records and the portal link all hang
+  // off the number the business already reaches this person on.
+  phone       String
+  email       String?
+  // Staff-only free text (allergies, account notes). Never shown in the portal.
+  notes       String?
+  // This person's id in the clinic's own system, when there is one. The join
+  // key for every integrated mode: their PMS says "patient 4471", we say
+  // Contact cuid, and this is what ties the two together across syncs.
+  // Phone stays the fallback match when their system has no stable id.
+  externalId  String?
+
+  // The clinic-facing patient number ("SDC-000147"). Distinct from externalId,
+  // which belongs to the clinic's own system — this one is ours, and it is what
+  // staff read out and search by.
+  //
+  // Nullable on purpose, and staying that way: a unique index over a column
+  // that is NULL on every existing row is a purely additive `prisma db push`,
+  // whereas making it NOT NULL would demand --accept-data-loss on live data.
+  // Postgres treats NULLs as distinct, so the constraint still does its job for
+  // every row that has a number. Rows created before this shipped are filled in
+  // by scripts/backfill-uhid.ts, and lazily by ensureUhid() as a safety net.
+  uhid String?
+
+  // ── Allergies ─────────────────────────────────────────────────────────────
+  // WHEN the allergy history was last taken. Distinct from whether any allergies
+  // exist, because "asked, and there are none" and "nobody has ever asked" are
+  // clinically different and must never be collapsed: a chatbot or a doctor
+  // reading a blank list as "no allergies" is exactly the error that gets
+  // someone a penicillin they react to.
+  //
+  // A timestamp rather than a sentinel Allergy row with substance "none" — a
+  // sentinel would corrupt every count, every list, every integration read and
+  // every future drug-interaction check.
+  allergiesReviewedAt   DateTime?
+  allergiesReviewedById String?
+
+  // ── Demographics ──────────────────────────────────────────────────────────
+  // You cannot practise medicine without these. Paediatric dosing is mg/kg and
+  // reckoned by age; what counts as a normal pulse or blood pressure is
+  // age-dependent; contraindications are sex-dependent; and two patients called
+  // "Ravi Kumar" are told apart by age before anything else.
+  //
+  // A date of birth is a CALENDAR DATE, not an instant — always stored as UTC
+  // midnight and always formatted in UTC. See src/lib/patients/age.ts, which
+  // owns that rule so it is never re-derived.
+  dateOfBirth DateTime?
+  sex         String? // female | male | other
+
+  // ── Households ────────────────────────────────────────────────────────────
+  // Families share one mobile number constantly — a mother books for three
+  // children, elderly parents use their son's phone. Treating one number as one
+  // person merged them into a single record, so a child's antibiotic course and
+  // a grandmother's cardiac medicines shared one allergy list, one age and one
+  // chatbot session.
+  //
+  // Each person now gets their own Contact, and several may share `phone`:
+  //   dependentKey ""    → the household primary (the number's owner)
+  //   dependentKey cuid  → a dependent registered by staff
+  //
+  // The sentinel exists so `upsertContact` keeps a deterministic compound key
+  // and stays a single atomic upsert on the voice-booking hot path — no
+  // transaction and no org-wide lock inside a booking. Putting `name` in the key
+  // instead would make a speech-recognised field an identity, and "Asha" /
+  // "Aasha" / "Asha Rao" would become three patients with three UHIDs.
+  //
+  // Invariants held in app code, not the schema (see src/lib/patients/household.ts):
+  // a dependent shares its guardian's org, workspace and phone; one level only;
+  // dependentKey is immutable after creation.
+  dependentKey      String    @default("")
+  guardianContactId String?
+  // SetNull, never Cascade — deleting a guardian must not delete a child's
+  // medical record.
+  guardian          Contact?  @relation("Dependents", fields: [guardianContactId], references: [id], onDelete: SetNull)
+  dependents        Contact[] @relation("Dependents")
+
+  // DEAD COLUMN. Was the bearer secret embedded in the chatbot link: whoever
+  // held that link was treated as this patient, which meant a forwarded
+  // appointment SMS handed over their medical history. Patients now sign in
+  // with their phone number and a one-time code (PortalOtp / PortalLogin), and
+  // nothing reads this any more.
+  //
+  // Kept rather than dropped because it is @unique and NOT NULL with no
+  // default — removing it is a destructive `prisma db push` on live data, and a
+  // dead column costs nothing.
+  portalToken     String    @unique
+  portalIssuedAt  DateTime  @default(now())
+  // Set when staff block a patient's portal access (a disputed record, or a
+  // phone in someone else's hands). Checked both when sending a code and when
+  // resolving a session, and revoking also kills any live login.
+  portalRevokedAt DateTime?
+  lastSeenAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  visits       VisitRecord[]
+  chatTurns    PortalChatTurn[]
+  appointments Appointment[]
+  logins       PortalLogin[]
+  allergies    Allergy[]
+
+  // One record per person per tenant, so repeat bookings from the same number
+  // accumulate history instead of creating duplicates.
+  //
+  // DROPPED. It was retained through the household groundwork so the database
+  // was never unprotected mid-transition; the composite below supersedes it now
+  // that dependents can actually be created.
+  //
+  // This drop is ONE-WAY in practice: once a second patient exists on a number,
+  // the old constraint cannot be re-added without deleting rows.
+  //
+  //   @@unique([orgId, phone])   ← removed
+  //
+  // The real identity key. Implied by the old constraint for every pre-existing
+  // row (they all carry dependentKey ""), so nothing had to be migrated.
+  @@unique([orgId, phone, dependentKey])
+  // Makes an integrated push idempotent: re-sending the same patient updates
+  // them instead of creating a duplicate.
+  @@unique([orgId, externalId])
+  // Belt-and-braces behind the atomic counter: even a bug in the allocator can
+  // never produce two patients sharing a number inside one clinic.
+  @@unique([orgId, uhid])
+  // Both OTP routes now look a household up by number, which is no longer unique.
+  @@index([orgId, phone])
+  @@index([workspaceId])
+}
+
+// A recorded allergy.
+//
+// Structured rather than prose in Contact.notes, because a free-text note is
+// something a doctor has to notice and read, while this can be put in front of
+// them — as a banner on the patient's page and immediately above the field where
+// they type the prescription. That is the moment the information has to arrive.
+model Allergy {
+  id        String  @id @default(cuid())
+  orgId     String
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  // What they react to — a drug, a food, latex. Free text on purpose for now: a
+  // fixed list would be wrong for an Indian clinic on day one, and a wrong
+  // controlled vocabulary is worse than none.
+  substance String
+  reaction  String? // "rash", "swelling", "anaphylaxis"
+  severity  String // mild | moderate | severe
+
+  recordedAt   DateTime  @default(now())
+  recordedById String?
+  // Superseded rather than deleted — "the patient says this was never true" is
+  // itself a clinical fact, and hard-deleting it destroys the audit trail.
+  retiredAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contactId])
+}
+
+// One consultation/visit and what came out of it. This is the thing the patient
+// asks the chatbot about later.
+model VisitRecord {
+  id            String  @id @default(cuid())
+  orgId         String
+  workspaceId   String
+  contactId     String
+  contact       Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  // The booking this visit came from, when there was one.
+  appointmentId String?
+  // This visit's id in the clinic's own system. Present for anything that
+  // arrived by integration; makes a repeated push an update, not a duplicate.
+  externalId    String?
+  // How this record got here: filed by staff in our UI, pushed by the clinic's
+  // system, or fetched from it. Staff must not be able to edit what another
+  // system owns — their edit would be silently overwritten by the next sync —
+  // so the UI keys off this.
+  source        String  @default("native") // native | push | rest | fhir
+
+  visitedAt    DateTime  @default(now())
+  expertName   String? // the doctor/stylist seen
+  service      String? // reason for the visit
+  diagnosis    String?
+  // The prescription as typed text (medicine, dosage, duration). Kept separate
+  // from the uploaded scan so the chatbot can answer precisely rather than
+  // saying "see the attached file".
+  prescription String?
+  advice       String?
+  followUpAt   DateTime?
+
+  // Staff-only. Excluded from every patient-facing query and never enters the
+  // chatbot's context — the doctor needs somewhere to write that the patient
+  // should not read.
+  internalNotes     String?
+  // Lets staff file a record now and release it to the patient later.
+  sharedWithContact Boolean   @default(true)
+  // WHEN the diagnosis was released to the patient. Null = held.
+  //
+  // The prescription, advice and follow-up date are useful to a patient the
+  // moment they are written. A diagnosis often is not: "? malignancy — for
+  // biopsy" reaching someone's phone before their doctor has spoken to them is
+  // a real harm, and breaking bad news is a clinical act with its own protocol.
+  //
+  // Two gates compose — the patient sees the visit if `sharedWithContact`, and
+  // the diagnosis only if this is also set.
+  //
+  // ⚠ Governs the structured `diagnosis` field ONLY. An attached discharge
+  // summary or report obviously contains the diagnosis too, and those are
+  // governed by `sharedWithContact`. Redacting PDFs would be false assurance —
+  // hold the whole record instead when a report must not go out yet.
+  diagnosisSharedAt DateTime?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  documents VisitDocument[]
+  items     PrescriptionItem[]
+
+  @@unique([orgId, externalId])
+  @@index([contactId, visitedAt])
+  @@index([workspaceId])
+}
+
+// One drug line on a prescription.
+//
+// `VisitRecord.prescription` (free text) is NOT replaced — dropping it would be
+// `--accept-data-loss` and would destroy every script written before this
+// shipped. The two coexist under one rule, enforced in
+// src/lib/patients/prescription.ts: a visit renders its items if it has any,
+// otherwise the free text. NEVER both. A prescription that says two things is a
+// dosing error waiting to happen.
+//
+// Every field except `drug` is optional, because a half-filled structured line
+// is still better than prose: "Amoxicillin" alone is queryable, and the doctor
+// can fill in the rest. Frequency and route are validated against
+// RX_FREQUENCIES / RX_ROUTES in src/lib/constants.ts, following the house
+// String-plus-comment convention rather than a Prisma enum.
+model PrescriptionItem {
+  id      String      @id @default(cuid())
+  visitId String
+  visit   VisitRecord @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  orgId   String
+
+  drug         String
+  strength     String? // "500 mg", "10 mg/5 ml"
+  dose         String? // "1 tablet", "5 ml"
+  frequency    String? // see RX_FREQUENCIES — od | bd | tds | qid | hs | sos | stat | weekly
+  durationDays Int?
+  route        String? // see RX_ROUTES — oral | topical | inhaled | ...
+  instructions String? // "after food", "with plenty of water"
+
+  // Explicit ordering: a prescription is a sequence a pharmacist reads top to
+  // bottom, and `createdAt` collides when a whole script is written in one
+  // transaction.
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([visitId, sortOrder])
+}
+
+// A prescription scan or report attached to a visit. The bytes are AES-256-GCM
+// ciphertext (same key as every other secret at rest), so a leaked database
+// dump is not a pile of readable medical records. Small files only — these live
+// in Postgres to stay inside the existing nightly backup, with no new bucket,
+// credential or lifecycle to manage.
+model VisitDocument {
+  id        String      @id @default(cuid())
+  visitId   String
+  visit     VisitRecord @relation(fields: [visitId], references: [id], onDelete: Cascade)
+  orgId     String
+  name      String
+  mimeType  String
+  sizeBytes Int // plaintext size, for the UI and quota checks
+  data      Bytes // encrypted
+  createdAt DateTime    @default(now())
+
+  @@index([visitId])
+}
+
+// A clinic's named chatbot: the thing the business creates, names, and hands to
+// its patients as a link. One per workspace is plenty, but the model allows
+// several (e.g. a group with two branches) — each has its own public slug and
+// answers only from its own workspace's data.
+model Portal {
+  id          String       @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  workspaceId String
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  name    String // "Smile Dental Care Assistant"
+  // Public URL segment: /c/<slug>. Globally unique because the URL is global.
+  slug    String  @unique
+  // Which agent backs it — supplies the persona, language and knowledge base,
+  // so the chatbot answers clinic FAQs the same way the phone agent does.
+  agentId String?
+  agent   Agent?  @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  greeting       String?
+  enabled        Boolean @default(true)
+  // What the patient is allowed to do. Records off = FAQ-only chatbot.
+  allowRecords   Boolean @default(true)
+  allowBooking   Boolean @default(true)
+  allowDownloads Boolean @default(true)
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  chatTurns PortalChatTurn[]
+
+  @@index([workspaceId])
+}
+
+// A one-time code sent to a patient's phone so they can open their clinic's
+// chatbot. This replaced a bearer token in the link, which meant a forwarded
+// appointment SMS handed over the patient's medical history.
+//
+// The security-critical counters live HERE rather than in the in-process rate
+// limiter: that limiter resets on every deploy and is per-process, so an
+// attacker's budget would reset with it.
+model PortalOtp {
+  id       String @id @default(cuid())
+  portalId String
+  orgId    String
+  phone    String // E.164
+  // sha256(code + phone + portalId + pepper). Not bcrypt: a 6-digit code has
+  // only 10^6 possibilities, so a slow hash is not the control — the 5-minute
+  // expiry and the attempt cap are. What the hash buys is that a leaked
+  // database cannot be used to replay a code that is still live.
+  codeHash String
+
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+
+  // ── Household selection ───────────────────────────────────────────────────
+  // When a verified number belongs to several patients, the code alone is not
+  // enough — we still need to know WHICH of them is signing in. Rather than
+  // issue a session and change it afterwards, /otp/verify hands back a
+  // short-lived selection token and /otp/select exchanges it for the cookie.
+  //
+  // Stored on the consumed OTP row rather than in a new table: the row already
+  // binds the phone (which is what determines the allowed set), and
+  // purgeExpiredOtps already deletes consumed rows, so cleanup is inherited.
+  // It also keeps "one code = one sign-in" literally true in one place.
+  selectionTokenHash String?
+  selectionExpiresAt DateTime?
+  // Drives the resend cooldown.
+  lastSentAt         DateTime  @default(now())
+  createdAt          DateTime  @default(now())
+
+  // Rows are created even for phone numbers with no patient record, so that a
+  // stranger cannot use response timing to discover who is a patient here.
+  @@index([portalId, phone, createdAt])
+  @@index([expiresAt])
+}
+
+// One-time codes proving a person controls the email address they signed up
+// with. Distinct from PortalOtp: that one gates a PATIENT reaching their records
+// over SMS/WhatsApp, this one gates a CLINIC OPERATOR reaching the dashboard
+// over email. Same shape, different front door, and deliberately not merged —
+// the two have different owners, different retention and different blast radius.
+//
+// Keyed on the Firebase uid rather than on our User row, because the whole point
+// is that no User row exists yet: provisioning is what verification unlocks.
+model EmailOtp {
+  id       String @id @default(cuid())
+  uid      String // Firebase uid — the account awaiting verification.
+  email    String // Lowercased, as it appears on the Firebase account.
+  // sha256(code + uid + email + pepper). Not bcrypt, for the same reason as
+  // PortalOtp: 10^6 possibilities means the expiry and the attempt cap are the
+  // control, and the hash only stops a leaked database yielding a live code.
+  codeHash String
+
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  // Drives the resend cooldown.
+  lastSentAt DateTime  @default(now())
+  createdAt  DateTime  @default(now())
+
+  @@index([uid, createdAt])
+  @@index([expiresAt])
+}
+
+// A signed-in patient session, created once a code is verified.
+//
+// Named PortalLogin rather than PortalSession to avoid colliding with the
+// exported TS type of that name in src/lib/portal/contacts.ts.
+model PortalLogin {
+  id        String @id @default(cuid())
+  // sha256 of the random value in the cookie. Only the hash is stored, so a
+  // database dump cannot be used to impersonate a patient.
+  tokenHash String @unique
+
+  portalId  String
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  lastSeenAt DateTime?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+
+  @@index([contactId])
+  @@index([expiresAt])
+}
+
+// Rolling history of one contact's portal chat, so the bot has context across
+// messages. Mirrors WhatsappTurn; only the most recent turns are read back.
+model PortalChatTurn {
+  id        String   @id @default(cuid())
+  portalId  String
+  portal    Portal   @relation(fields: [portalId], references: [id], onDelete: Cascade)
+  contactId String
+  contact   Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  role      String // user | model
+  text      String
+  createdAt DateTime @default(now())
+
+  @@index([contactId, createdAt])
+  // Backs the monthly conversation count used for plan enforcement
+  // (billing.ts countChatConversations).
+  @@index([portalId, createdAt])
+}
+
+// ─── Starter Kit sales ───────────────────────────────────────────────────────
+
+// One purchase of the downloadable Starter Kit.
+//
+// Deliberately has NO relation to Organization or User. The kit is sold to
+// strangers who never sign in to the platform — a buyer gives an email, pays,
+// and downloads. Tying it to the tenancy model would mean creating an empty
+// org per ₹299 sale, and would put a stranger's row inside the structure that
+// scopes every customer query.
+//
+// The order id carries a `vkt_` prefix so it can never be mistaken for a plan
+// payment (`van_`) or a minutes top-up (`vtm_`) by the billing webhook.
+model KitOrder {
+  id    String  @id @default(cuid())
+  email String // Lowercased. The buyer's only identity, and where the link is sent.
+  name  String?
+
+  // Cashfree's order id, and our primary key with the gateway.
+  orderId     String  @unique
+  amountInr   Float
+  // PENDING → PAID, or FAILED. Nothing is downloadable until PAID.
+  status      String  @default("PENDING")
+  cfPaymentId String?
+
+  // Minted only once the payment is confirmed. Random, unguessable, and the
+  // sole thing that authorises a download — so it is indexed for lookup and
+  // expires, rather than being a permanent key to the file.
+  downloadToken  String?   @unique
+  tokenExpiresAt DateTime?
+  // Capped so a leaked link cannot be handed around indefinitely. The buyer
+  // can always be re-issued one by email.
+  downloadCount  Int       @default(0)
+  maxDownloads   Int       @default(5)
+
+  createdAt DateTime  @default(now())
+  paidAt    DateTime?
+
+  @@index([email, createdAt])
+  @@index([status, createdAt])
+}

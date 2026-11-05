@@ -1,0 +1,7 @@
+# Never ship these. config.json and .env hold live API keys; calls.json holds
+# real callers' names and phone numbers.
+config.json
+.env
+calls.json
+greeting.wav
+node_modules/

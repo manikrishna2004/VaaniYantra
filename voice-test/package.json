@@ -1,0 +1,14 @@
+{
+  "name": "voice-test",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Lean standalone Twilio<->Gemini Live bridge for latency testing (hybrid Telugu)",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@google/genai": "^2.9.0",
+    "ws": "^8.18.0"
+  }
+}

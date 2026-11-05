@@ -1,0 +1,44 @@
+# The voice server, as a client-cloud runtime.
+#
+# Deliberately a SEPARATE image from the web app, mirroring how production runs
+# them: two pm2 processes, on two ports, that fail independently. A single
+# container running both would make a voice-server crash take the dashboard
+# down with it — and deploy.sh health-gates :3000 and :8080 separately for
+# exactly that reason.
+#
+# Runs the TypeScript through tsx rather than compiling it, which is what the
+# `voice-server` npm script does on the VM today. Keeping the two identical
+# matters more here than the startup milliseconds: this is PARE's call path,
+# and a build step that only exists in the container is a difference nobody
+# would think to check when a call sounds wrong.
+
+FROM node:20-bookworm-slim AS runtime
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV NODE_ENV=production \
+    PORT=8080 \
+    DEPLOYMENT_MODE=dedicated
+
+COPY package.json package-lock.json ./
+# The voice server needs tsx and the Prisma client, both of which are in the
+# same dependency tree the web app uses. `npm ci` without --omit=dev because
+# tsx is a devDependency and is the entry point here.
+RUN npm ci
+
+COPY prisma ./prisma
+RUN npx prisma generate
+
+COPY voice-server ./voice-server
+COPY src ./src
+COPY tsconfig.json ./
+
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -fsS http://localhost:8080/health || exit 1
+
+USER node
+CMD ["node_modules/.bin/tsx", "voice-server/index.ts"]

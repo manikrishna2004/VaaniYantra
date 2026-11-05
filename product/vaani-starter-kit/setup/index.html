@@ -1,0 +1,643 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Set up your voice agent</title>
+<style>
+  /* One file, no build step, no framework — same principle as the rest of the
+     kit. A buyer who opens this to change something should be able to read it. */
+  :root {
+    --bg: #0f1115; --panel: #161922; --panel-2: #1c202b;
+    --line: rgba(255,255,255,.09); --line-strong: rgba(255,255,255,.18);
+    --ink: #e8eaf0; --ink-soft: #aab2c4; --ink-dim: #78829a;
+    --brand: #8b7fff; --good: #6ee7a8; --bad: #ff8f8f; --warn: #ffc978;
+    --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  .wrap { max-width: 50rem; margin: 0 auto; padding: 2.5rem 1.25rem 6rem; }
+
+  header.top { margin-bottom: 2rem; }
+  header.top h1 { font-size: 1.5rem; margin: 0 0 .35rem; letter-spacing: -.01em; }
+  header.top p { color: var(--ink-soft); margin: 0; }
+
+  .ready {
+    display: flex; align-items: center; gap: .65rem; margin-top: 1.25rem;
+    padding: .8rem 1rem; border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--panel); font-size: .92rem;
+  }
+  .ready .dot { width: .6rem; height: .6rem; border-radius: 50%; background: var(--warn); flex: none; }
+  .ready.go .dot { background: var(--good); }
+  .ready strong { font-weight: 600; }
+
+  section.step {
+    border: 1px solid var(--line); border-radius: 14px;
+    background: var(--panel); margin-bottom: 1rem; overflow: hidden;
+  }
+  section.step > .head {
+    display: flex; align-items: baseline; gap: .75rem; width: 100%;
+    padding: 1.05rem 1.25rem; cursor: pointer; background: none; border: 0;
+    color: inherit; font: inherit; text-align: left;
+  }
+  section.step > .head:hover { background: var(--panel-2); }
+  .head .num {
+    font-variant-numeric: tabular-nums; color: var(--brand);
+    font-size: .8rem; font-weight: 600; flex: none; width: 1.2rem;
+  }
+  .head .title { font-weight: 600; }
+  .head .blurb { color: var(--ink-dim); font-size: .87rem; }
+  .head .tag {
+    margin-left: auto; font-size: .75rem; color: var(--ink-dim);
+    border: 1px solid var(--line); border-radius: 99px; padding: .1rem .55rem; flex: none;
+  }
+  .head .tag.done { color: var(--good); border-color: rgba(110,231,168,.35); }
+  .head .tag.todo { color: var(--warn); border-color: rgba(255,201,120,.35); }
+
+  .body { padding: 0 1.25rem 1.25rem; display: none; }
+  section.step.open .body { display: block; }
+
+  .field { margin-top: 1.1rem; }
+  .field label { display: block; font-size: .88rem; margin-bottom: .35rem; color: var(--ink-soft); }
+  .field label .req { color: var(--brand); }
+  input[type=text], input[type=password], input[type=number], select, textarea {
+    width: 100%; padding: .6rem .7rem; border-radius: 8px;
+    border: 1px solid var(--line-strong); background: #0b0d12; color: var(--ink);
+    font: inherit; font-size: .92rem;
+  }
+  input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); outline-offset: 1px; border-color: transparent; }
+  input:disabled, select:disabled { opacity: .55; cursor: not-allowed; }
+  textarea { min-height: 4.5rem; resize: vertical; }
+  .help { font-size: .82rem; color: var(--ink-dim); margin-top: .35rem; }
+  .help.locked { color: var(--warn); }
+
+  .days { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .days label {
+    display: inline-flex; align-items: center; gap: .35rem; margin: 0;
+    padding: .4rem .6rem; border: 1px solid var(--line-strong); border-radius: 8px;
+    cursor: pointer; font-size: .88rem; color: var(--ink);
+  }
+  .days label:has(input:checked) { border-color: var(--brand); background: rgba(139,127,255,.13); }
+  .days input { accent-color: var(--brand); }
+
+  .check { display: flex; align-items: center; gap: .55rem; }
+  .check input { width: 1.05rem; height: 1.05rem; accent-color: var(--brand); }
+  .check label { margin: 0; color: var(--ink); }
+
+  .row { display: flex; gap: .6rem; flex-wrap: wrap; align-items: center; margin-top: 1.25rem; }
+  button.btn {
+    padding: .55rem 1rem; border-radius: 8px; border: 1px solid var(--line-strong);
+    background: transparent; color: var(--ink); font: inherit; font-size: .9rem; cursor: pointer;
+  }
+  button.btn:hover:not(:disabled) { border-color: var(--brand); color: #fff; }
+  button.btn.primary { background: var(--brand); border-color: var(--brand); color: #0b0d12; font-weight: 600; }
+  button.btn.primary:hover:not(:disabled) { opacity: .9; color: #0b0d12; }
+  button.btn:disabled { opacity: .5; cursor: default; }
+
+  .result { margin-top: .85rem; padding: .7rem .85rem; border-radius: 8px; font-size: .88rem; display: none; }
+  .result.show { display: block; }
+  .result.ok { background: rgba(110,231,168,.09); border: 1px solid rgba(110,231,168,.3); }
+  .result.bad { background: rgba(255,143,143,.09); border: 1px solid rgba(255,143,143,.3); }
+  .result .detail { color: var(--ink-soft); margin-top: .3rem; font-size: .84rem; }
+
+  .note {
+    margin-top: 1.1rem; padding: .85rem 1rem; border-radius: 8px;
+    background: var(--panel-2); border: 1px solid var(--line); font-size: .88rem; color: var(--ink-soft);
+  }
+
+  /* ── The built-in guide ─────────────────────────────────────────────────
+     Open by default on a step that still needs something, so a first-time
+     reader is told what to do without hunting for it; collapsed once the step
+     is done, so it stops being in the way on the tenth visit. */
+  details.guide {
+    margin-top: .25rem; border: 1px solid var(--line); border-radius: 10px;
+    background: var(--panel-2); overflow: hidden;
+  }
+  details.guide > summary {
+    cursor: pointer; padding: .7rem .9rem; font-size: .88rem; font-weight: 600;
+    color: var(--ink); list-style: none; display: flex; align-items: center; gap: .5rem;
+  }
+  details.guide > summary::-webkit-details-marker { display: none; }
+  details.guide > summary::before {
+    content: '›'; display: inline-block; transition: transform .15s ease;
+    color: var(--brand); font-size: 1.1rem; line-height: 1;
+  }
+  details.guide[open] > summary::before { transform: rotate(90deg); }
+  details.guide > summary:hover { background: rgba(255,255,255,.03); }
+  .guide-body { padding: 0 .9rem .9rem 2rem; font-size: .88rem; color: var(--ink-soft); }
+  .guide-body p.intro { margin: 0 0 .7rem; }
+  .guide-body ol { margin: 0; padding-left: 1.1rem; }
+  .guide-body ol li { margin-bottom: .5rem; line-height: 1.5; }
+  .guide-body ol li::marker { color: var(--brand); font-weight: 600; }
+  .guide-body a { color: var(--brand); }
+  .guide-body strong { color: var(--ink); font-weight: 600; }
+  .guide-body code {
+    background: #0b0d12; padding: .1rem .35rem; border-radius: 4px;
+    border: 1px solid var(--line); font-size: .85em;
+  }
+  .warn-box {
+    margin-top: .8rem; padding: .7rem .85rem; border-radius: 8px;
+    background: rgba(255,201,120,.08); border: 1px solid rgba(255,201,120,.28);
+    color: var(--ink-soft); line-height: 1.5;
+  }
+  .warn-box b { color: var(--warn); font-weight: 600; }
+  .note b { color: var(--ink); font-weight: 600; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85em;
+    background: #0b0d12; padding: .15rem .4rem; border-radius: 5px;
+    border: 1px solid var(--line); word-break: break-all; color: var(--ink);
+  }
+  .copyline { display: flex; gap: .5rem; align-items: center; margin-top: .5rem; }
+  .copyline code { flex: 1; padding: .5rem .6rem; }
+
+  .savebar {
+    position: fixed; left: 0; right: 0; bottom: 0; background: rgba(15,17,21,.95);
+    border-top: 1px solid var(--line); backdrop-filter: blur(8px);
+    padding: .85rem 1.25rem; display: flex; justify-content: center; gap: .75rem; align-items: center;
+  }
+  .savebar .inner { width: 100%; max-width: 50rem; display: flex; gap: .75rem; align-items: center; }
+  .savebar .status { color: var(--ink-dim); font-size: .87rem; margin-left: auto; }
+  .savebar .status.saved { color: var(--good); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1>Set up your voice agent</h1>
+    <p>Fill these in, test each one, and your phone number starts answering.</p>
+    <div class="ready" id="ready"><span class="dot"></span><span id="readyText">Checking…</span></div>
+  </header>
+
+  <div id="steps"></div>
+</div>
+
+<div class="savebar">
+  <div class="inner">
+    <button class="btn primary" id="saveAll">Save everything</button>
+    <span class="status" id="saveStatus"></span>
+  </div>
+</div>
+
+<script type="module">
+// ── State ───────────────────────────────────────────────────────────────────
+let SCHEMA = { fields: [], steps: [] };
+let VALUES = {};
+let MASKED = {};
+let LOCKED = [];
+let TOUCHED = new Set();   // fields the user actually edited
+let MISSING = [];
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const el = (tag, props = {}, ...kids) => {
+  const node = Object.assign(document.createElement(tag), props);
+  for (const kid of kids.flat()) if (kid != null) node.append(kid);
+  return node;
+};
+
+async function api(path, options) {
+  const res = await fetch(path, {
+    ...options,
+    headers: options?.body ? { 'content-type': 'application/json' } : undefined,
+  });
+  return res.json();
+}
+
+// ── Which fields apply right now ────────────────────────────────────────────
+// The `when` clause is how the Twilio and Exotel credential sets swap places
+// without two separate pages.
+const applies = (field) => {
+  if (!field.when) return true;
+  return Object.entries(field.when).every(([key, want]) => (VALUES[key] || '') === want);
+};
+
+// ── Field rendering ─────────────────────────────────────────────────────────
+
+function renderField(field) {
+  const id = 'f_' + field.key;
+  const locked = LOCKED.includes(field.key);
+  const value = VALUES[field.key] ?? '';
+
+  const label = el('label', { htmlFor: id });
+  label.append(field.label);
+  if (field.required) label.append(el('span', { className: 'req', textContent: ' *' }));
+
+  let input;
+
+  if (field.type === 'select') {
+    input = el('select', { id });
+    for (const opt of field.options) {
+      input.append(el('option', { value: opt.value, textContent: opt.label, selected: opt.value === value }));
+    }
+  } else if (field.type === 'timezone') {
+    input = el('select', { id });
+    // Every timezone the browser knows, so nobody types "IST" and wonders why
+    // bookings land on the wrong day.
+    const guess = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const zones = typeof Intl.supportedValuesOf === 'function'
+      ? Intl.supportedValuesOf('timeZone')
+      : [value || guess || 'UTC'];
+    const chosen = value || guess;
+    for (const zone of zones) {
+      input.append(el('option', { value: zone, textContent: zone, selected: zone === chosen }));
+    }
+    // Showing the browser's timezone as selected while not actually storing it
+    // means the field looks answered and is not. Adopt the guess as a real,
+    // savable value the moment it is offered.
+    if (!value && chosen) queueMicrotask(() => set(field.key, chosen));
+  } else if (field.type === 'hour') {
+    input = el('select', { id });
+    for (let h = 0; h < 24; h++) {
+      const ampm = h === 0 ? '12 AM' : h < 12 ? h + ' AM' : h === 12 ? '12 PM' : (h - 12) + ' PM';
+      input.append(el('option', { value: String(h), textContent: ampm, selected: String(h) === String(value) }));
+    }
+  } else if (field.type === 'days') {
+    const chosen = new Set(String(value).split(',').map((d) => d.trim()));
+    input = el('div', { className: 'days' });
+    ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach((name, i) => {
+      const box = el('input', { type: 'checkbox', value: String(i), checked: chosen.has(String(i)) });
+      box.addEventListener('change', () => {
+        const picked = [...input.querySelectorAll('input:checked')].map((b) => b.value);
+        set(field.key, picked.join(','));
+      });
+      input.append(el('label', {}, box, name));
+    });
+  } else if (field.type === 'boolean') {
+    const box = el('input', { type: 'checkbox', id, checked: String(value) === 'true' });
+    box.addEventListener('change', () => set(field.key, box.checked ? 'true' : 'false'));
+    const wrap = el('div', { className: 'field' },
+      el('div', { className: 'check' }, box, el('label', { htmlFor: id, textContent: field.label })),
+      field.help ? el('div', { className: 'help', textContent: field.help }) : null);
+    return wrap;
+  } else if (field.type === 'textarea') {
+    input = el('textarea', { id, value, placeholder: field.placeholder || '' });
+  } else {
+    input = el('input', {
+      id,
+      // Secrets are password fields until the user focuses them — a buyer
+      // screen-sharing their setup should not broadcast an API key.
+      type: field.secret ? 'password' : (field.type === 'number' ? 'number' : 'text'),
+      value,
+      placeholder: field.placeholder || '',
+      readOnly: Boolean(field.readOnly),
+    });
+  }
+
+  if (input.tagName !== 'DIV') {
+    if (locked) input.disabled = true;
+
+    // A masked secret must clear on first edit, or the user appends their new
+    // key to six bullet characters and saves nonsense.
+    if (field.secret && MASKED[field.key]) {
+      input.addEventListener('focus', () => {
+        if (!TOUCHED.has(field.key)) { input.value = ''; }
+      }, { once: true });
+    }
+    input.addEventListener('input', () => set(field.key, input.value));
+    input.addEventListener('change', () => {
+      set(field.key, input.value);
+      // The panel telling you what to paste into the provider's dashboard is
+      // built from this value, so it has to be rebuilt once it changes. Done
+      // on `change` rather than `input` so the field is not re-rendered out
+      // from under the cursor on every keystroke.
+      if (field.key === 'PUBLIC_URL') render();
+    });
+  }
+
+  return el('div', { className: 'field' },
+    label,
+    input,
+    locked ? el('div', { className: 'help locked', textContent: 'Set by an environment variable — edit it where you deploy.' })
+           : (field.help ? el('div', { className: 'help', textContent: field.help }) : null));
+}
+
+function set(key, value) {
+  VALUES[key] = value;
+  TOUCHED.add(key);
+  markUnsaved();
+  // Swapping telephony provider changes which credential fields exist.
+  if (key === 'TELEPHONY_PROVIDER') render();
+}
+
+// ── The built-in guide ──────────────────────────────────────────────────────
+
+/**
+ * Turn one guide line into DOM.
+ *
+ * Supports [label](url) links, **bold** and `code`. Built as real nodes rather
+ * than assigned as innerHTML — the text is ours, but a habit of writing markup
+ * from strings is how an injection bug eventually arrives.
+ */
+function richText(line) {
+  const frag = document.createDocumentFragment();
+  // One pass over links, bold and code together, so they can appear in any order.
+  const pattern = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)|\*\*([^*]+)\*\*|`([^`]+)`/g;
+  let last = 0;
+  let m;
+  while ((m = pattern.exec(line)) !== null) {
+    if (m.index > last) frag.append(line.slice(last, m.index));
+    if (m[1]) {
+      frag.append(el('a', { href: m[2], target: '_blank', rel: 'noopener noreferrer', textContent: m[1] }));
+    } else if (m[3]) {
+      frag.append(el('strong', { textContent: m[3] }));
+    } else if (m[4]) {
+      frag.append(el('code', { textContent: m[4] }));
+    }
+    last = pattern.lastIndex;
+  }
+  if (last < line.length) frag.append(line.slice(last));
+  return frag;
+}
+
+function guidePanel(stepKey, done) {
+  const provider = VALUES.TELEPHONY_PROVIDER || 'twilio';
+  const key = stepKey === 'phone' ? (provider === 'exotel' ? 'exotel' : 'twilio') : stepKey;
+  const help = SCHEMA.help?.[key];
+  if (!help) return null;
+
+  const body = el('div', { className: 'guide-body' });
+  if (help.intro) body.append(el('p', { className: 'intro' }, richText(help.intro)));
+  if (help.steps?.length) {
+    const ol = el('ol');
+    for (const step of help.steps) ol.append(el('li', {}, richText(step)));
+    body.append(ol);
+  }
+  if (help.warn) {
+    body.append(el('div', { className: 'warn-box' },
+      el('b', { textContent: 'Watch out. ' }), richText(help.warn)));
+  }
+
+  const panel = el('details', { className: 'guide' },
+    el('summary', { textContent: 'How to get these' }),
+    body);
+  // Unfinished steps show their instructions immediately; finished ones fold
+  // away so the page is not a wall of text once you know what you are doing.
+  panel.open = !done;
+  return panel;
+}
+
+// ── Test buttons ────────────────────────────────────────────────────────────
+
+function testButton(what, label, resultBox) {
+  const btn = el('button', { className: 'btn', textContent: label });
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Testing…';
+    await saveAll({ quiet: true }); // test what is saved, not what is typed
+    const res = await api('/setup/test', { method: 'POST', body: JSON.stringify({ what }) });
+    btn.disabled = false;
+    btn.textContent = label;
+    resultBox.className = 'result show ' + (res.ok ? 'ok' : 'bad');
+    resultBox.replaceChildren(
+      el('div', { textContent: (res.ok ? '✓ ' : '✕ ') + res.message }),
+      (res.detail || res.hint) ? el('div', { className: 'detail', textContent: res.detail || res.hint }) : null,
+    );
+    refreshReady();
+  });
+  return btn;
+}
+
+// ── Step-specific extras ────────────────────────────────────────────────────
+
+function phoneExtras() {
+  const provider = VALUES.TELEPHONY_PROVIDER || 'twilio';
+  const publicUrl = (VALUES.PUBLIC_URL || '').replace(/\/+$/, '');
+  const note = el('div', { className: 'note' });
+
+  if (!publicUrl) {
+    note.append(el('div', {}, el('b', { textContent: 'Set your public URL above' }),
+      ' and this will show exactly what to paste into the dashboard.'));
+    return note;
+  }
+
+  if (provider === 'twilio') {
+    note.append(
+      el('div', {}, el('b', { textContent: 'In Twilio: ' }),
+        'Phone Numbers → your number → Voice Configuration. Set "A call comes in" to Webhook, HTTP POST, with this URL:'),
+      copyLine(publicUrl + '/voice'),
+    );
+  } else {
+    note.append(
+      el('div', {}, el('b', { textContent: 'In Exotel: ' }),
+        'Exotel never asks your server what to do. Create an App with a Voicebot applet, point it at the URL below, then attach that App to your ExoPhone.'),
+      copyLine(publicUrl.replace(/^http/, 'ws') + '/exotel'),
+      el('div', { className: 'help', textContent: 'Exotel numbers are KYC-provisioned in their dashboard — they cannot be bought through the API.' }),
+    );
+  }
+  return note;
+}
+
+function copyLine(text) {
+  const code = el('code', { textContent: text });
+  const btn = el('button', { className: 'btn', textContent: 'Copy' });
+  btn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    } catch {
+      btn.textContent = 'Select it manually';
+    }
+  });
+  return el('div', { className: 'copyline' }, code, btn);
+}
+
+function calendarExtras(resultBox) {
+  const box = el('div', { className: 'note' });
+  const connect = el('button', { className: 'btn primary', textContent: 'Connect Google Calendar' });
+
+  connect.addEventListener('click', async () => {
+    await saveAll({ quiet: true });
+    if (!VALUES.GOOGLE_CLIENT_ID || !VALUES.GOOGLE_CLIENT_SECRET) {
+      resultBox.className = 'result show bad';
+      resultBox.textContent = '✕ Save your client ID and secret first.';
+      return;
+    }
+    window.open('/setup/google/start', 'google', 'width=520,height=650');
+  });
+
+  // The popup tells us how it went, then closes itself.
+  window.addEventListener('message', async (event) => {
+    if (typeof event.data !== 'object' || event.data === null) return;
+    if (!('googleConnected' in event.data)) return;
+    if (event.data.googleConnected) {
+      await load();
+      render();
+      resultBox.className = 'result show ok';
+      resultBox.textContent = '✓ Calendar connected.';
+    }
+  });
+
+  api('/setup/google/redirect-uri').then(({ redirectUri }) => {
+    box.append(
+      el('div', {}, el('b', { textContent: 'Before you press Connect: ' }),
+        'in Google Cloud Console → Credentials → your OAuth client, add this exact redirect URI:'),
+      copyLine(redirectUri),
+      el('div', { className: 'help', textContent: 'Google allows http only for localhost, which is why this is not your public URL. It does not need to change when your tunnel does.' }),
+    );
+  });
+
+  return el('div', {}, box, el('div', { className: 'row' }, connect));
+}
+
+// ── Rendering ───────────────────────────────────────────────────────────────
+
+const TESTS_PER_STEP = {
+  ai: ['gemini', 'Test the AI key'],
+  whatsapp: ['whatsapp', 'Test WhatsApp'],
+  calendar: ['calendar', 'Test the calendar'],
+};
+
+function render() {
+  const host = $('#steps');
+  const openNow = new Set([...host.querySelectorAll('section.step.open')].map((s) => s.dataset.step));
+  // Remember which guides the reader had expanded, so pressing Save does not
+  // fold away the instructions they were halfway through following.
+  const guidesOpen = new Set(
+    [...host.querySelectorAll('details.guide[open]')].map((d) => d.closest('section.step')?.dataset.step),
+  );
+  const guidesShut = new Set(
+    [...host.querySelectorAll('details.guide:not([open])')].map((d) => d.closest('section.step')?.dataset.step),
+  );
+  host.replaceChildren();
+
+  SCHEMA.steps.forEach((step, index) => {
+    const fields = SCHEMA.fields.filter((f) => f.step === step.key && applies(f));
+    const required = fields.filter((f) => f.required);
+    // A step with nothing required is already fine — every field in it ships
+    // with a working default. Treating "no required fields" as "not done" put
+    // a red "needed" badge on a step there was nothing to do in.
+    const done = required.every((f) => VALUES[f.key]);
+    // An optional step counts as "on" only when something was actually
+    // supplied. Fields carrying a default — the WhatsApp template name, say —
+    // are always filled, so counting those marked WhatsApp as connected before
+    // the buyer had entered a single credential.
+    const optionalDone = step.optional && fields.some((f) => !f.default && VALUES[f.key]);
+
+    const section = el('section', { className: 'step' });
+    section.dataset.step = step.key;
+    // Open the first step that still needs something, so the page lands on the
+    // thing to do rather than on a wall of collapsed headings.
+    if (openNow.size ? openNow.has(step.key) : (!done && !step.optional)) section.classList.add('open');
+
+    const tag = step.optional
+      ? el('span', { className: 'tag' + (optionalDone ? ' done' : ''), textContent: optionalDone ? 'on' : 'optional' })
+      : el('span', { className: 'tag ' + (done ? 'done' : 'todo'), textContent: done ? 'done' : 'needed' });
+
+    const head = el('button', { className: 'head', type: 'button' },
+      el('span', { className: 'num', textContent: String(index + 1) }),
+      el('span', {}, el('span', { className: 'title', textContent: step.title }), ' ',
+        el('span', { className: 'blurb', textContent: step.blurb })),
+      tag);
+    head.addEventListener('click', () => section.classList.toggle('open'));
+
+    const body = el('div', { className: 'body' });
+
+    // Instructions first. Someone opening a step wants to know where the value
+    // comes from before they meet an empty box asking for it.
+    const guide = guidePanel(step.key, step.optional ? optionalDone : done);
+    if (guide) {
+      if (guidesOpen.has(step.key)) guide.open = true;
+      else if (guidesShut.has(step.key)) guide.open = false;
+      body.append(guide);
+    }
+
+    for (const field of fields) body.append(renderField(field));
+
+    const resultBox = el('div', { className: 'result' });
+
+    if (step.key === 'phone') {
+      body.append(phoneExtras());
+      const provider = VALUES.TELEPHONY_PROVIDER || 'twilio';
+      body.append(el('div', { className: 'row' },
+        testButton(provider, 'Test ' + (provider === 'twilio' ? 'Twilio' : 'Exotel'), resultBox),
+        testButton('publicUrl', 'Test the public URL', resultBox)));
+    } else if (step.key === 'calendar') {
+      body.append(calendarExtras(resultBox));
+      body.append(el('div', { className: 'row' }, testButton('calendar', 'Test the calendar', resultBox)));
+    } else if (TESTS_PER_STEP[step.key]) {
+      const [what, label] = TESTS_PER_STEP[step.key];
+      body.append(el('div', { className: 'row' }, testButton(what, label, resultBox)));
+    }
+
+    body.append(resultBox);
+    section.append(head, body);
+    host.append(section);
+  });
+}
+
+// ── Saving ──────────────────────────────────────────────────────────────────
+
+function markUnsaved() {
+  const status = $('#saveStatus');
+  status.className = 'status';
+  status.textContent = 'Unsaved changes';
+}
+
+async function saveAll({ quiet = false } = {}) {
+  const patch = {};
+  for (const key of TOUCHED) patch[key] = VALUES[key] ?? '';
+  if (!Object.keys(patch).length) return;
+
+  const res = await api('/setup/config', { method: 'POST', body: JSON.stringify(patch) });
+  TOUCHED.clear();
+  MISSING = res.missing || [];
+
+  if (!quiet) {
+    const status = $('#saveStatus');
+    status.className = 'status saved';
+    status.textContent = 'Saved';
+    setTimeout(() => { if (status.textContent === 'Saved') status.textContent = ''; }, 2500);
+  }
+  await load();
+  // Re-render so each step's badge reflects what was just saved. render()
+  // keeps whichever sections were open, so this does not move the page around
+  // under the reader.
+  render();
+  refreshReady();
+}
+
+function refreshReady() {
+  const ready = $('#ready');
+  const text = $('#readyText');
+  if (!MISSING.length) {
+    ready.classList.add('go');
+    text.replaceChildren(el('span', {}, el('strong', { textContent: 'Ready. ' }),
+      'Point your number at the URL in step 3 and ring it.'));
+  } else {
+    ready.classList.remove('go');
+    text.replaceChildren(el('span', {}, el('strong', { textContent: MISSING.length + ' still needed. ' }),
+      'The agent will not answer until these are filled in.'));
+  }
+}
+
+async function load() {
+  const cfg = await api('/setup/config');
+  // Anything the user is mid-edit wins over what the server just told us.
+  const pending = {};
+  for (const key of TOUCHED) pending[key] = VALUES[key];
+  VALUES = { ...cfg.values, ...pending };
+  MASKED = cfg.masked || {};
+  LOCKED = cfg.lockedByEnv || [];
+  MISSING = cfg.missing || [];
+}
+
+$('#saveAll').addEventListener('click', () => saveAll());
+
+// Save on the way out, so a closed tab does not lose ten minutes of typing.
+window.addEventListener('beforeunload', () => {
+  if (!TOUCHED.size) return;
+  const patch = {};
+  for (const key of TOUCHED) patch[key] = VALUES[key] ?? '';
+  navigator.sendBeacon('/setup/config', new Blob([JSON.stringify(patch)], { type: 'application/json' }));
+});
+
+SCHEMA = await api('/setup/schema');
+await load();
+render();
+refreshReady();
+</script>
+</body>
+</html>

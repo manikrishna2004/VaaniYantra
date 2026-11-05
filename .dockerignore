@@ -1,0 +1,32 @@
+# Everything the image builds for itself, plus everything it must never carry.
+#
+# .env is the important line. The build context is this repo; a stray .env
+# copied into a layer would put our production secrets on a client's box, where
+# their ops team has root — and layers survive a later `rm`.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+Cashfree_*.csv
+.places-key.tmp
+
+node_modules
+.next
+.git
+.github
+.claude
+
+# Built on the VM, not shipped.
+vaani-src.tar.gz
+tsconfig.tsbuildinfo
+
+# Sales collateral, lead lists and call recordings: not runtime, and the leads
+# are personal data that has no business in a client's image.
+sales
+design
+voice-test
+tests
+docs
+*.md
+!README.md

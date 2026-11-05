@@ -1,0 +1,4 @@
+# Shell scripts must stay LF — they run on the Linux VM, and bash chokes on
+# CRLF. (This repo is developed on Windows, where autocrlf would otherwise
+# convert them on checkout.)
+*.sh text eol=lf

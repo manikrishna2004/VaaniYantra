@@ -1,0 +1,258 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+/* Must match theme bg/ink in tailwind.config.ts. Kept as literals because this
+   rule paints before Tailwind's utilities are parsed — a mismatch here shows as
+   a flash of the wrong colour on first load. */
+html,
+body {
+  background: #f4f6fa;
+  color: #101828;
+}
+
+/* The marketing pages live on the dark scale, so they paint their own ground
+   before Tailwind loads — same reasoning as the rule above, and the same
+   obligation to match `bg-inverse` / `ink-inverse` exactly. Applied by the
+   marketing layout, not by a media query: this is a surface choice, not a
+   theme preference. */
+body[data-surface='inverse'] {
+  background: #0a0e17;
+  color: #eef1f7;
+}
+
+/* Default border colour for anything that opts into a border. Scoped to the
+   base layer so component classes win without needing !important — as a bare
+   `*` rule it sat at the same specificity as utilities and silently fought
+   them. */
+@layer base {
+  *,
+  ::before,
+  ::after {
+    border-color: theme('colors.border');
+  }
+
+  /* One visible focus treatment for every focusable thing, so nothing can ship
+     without a keyboard affordance. :focus-visible keeps it off mouse clicks. */
+  :focus-visible {
+    outline: 2px solid theme('colors.primary.DEFAULT');
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* Let the browser skip long scroll animations for people who ask it to. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    ::before,
+    ::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+/* Thin scrollbars, tuned for the light surface */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #c3cedb;
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #a5b4c4;
+}
+
+/* ── The per-vertical accent ───────────────────────────────────────────────
+   One custom property, set on <body> by /solutions/[vertical]. Everything that
+   should take the industry's colour reads var(--accent-vertical) instead of a
+   Tailwind colour, so six industries share one set of components and adding a
+   seventh is a row in a table, not a new page.
+
+   The default is the brand, so a page that sets nothing still looks correct
+   rather than unstyled. `-on` is the readable ink for text sitting ON the
+   accent — it cannot be derived in CSS, so each vertical supplies it. */
+:root {
+  --accent-vertical: #4b3fce;
+  --accent-vertical-on: #ffffff;
+  --accent-vertical-soft: rgba(75, 63, 206, 0.14);
+}
+
+@layer components {
+  /* ── Tiles ────────────────────────────────────────────────────────────────
+     The core surface. On the light background a card reads as a distinct TILE:
+     white fill, a perceivable hairline, and one soft shadow to lift it off the
+     page. All three, not one — border alone was what made cards float
+     indistinguishably on the old dark scheme, and shadow alone disappears for
+     anyone using a high-contrast or forced-colours mode. */
+  .card {
+    @apply bg-surface border border-border rounded-2xl shadow-tile;
+  }
+  /* An interactive tile: the whole thing is a target, so it has to say so. The
+     lift is deliberately small — a clinical dashboard should feel steady, not
+     bouncy, and a big translate makes dense grids feel unstable while scanning. */
+  .tile-interactive {
+    @apply transition-[box-shadow,border-color,transform] duration-base ease-standard
+      hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-tile-raised;
+  }
+  /* A tile that leads with a number — the dashboard/stat grid. */
+  .tile-stat {
+    @apply card flex flex-col gap-1 p-5;
+  }
+  /* border-strong, not border: at 1.16:1 against surface-2 the old hairline was
+     effectively invisible, so fields read as floating text. min-h keeps the
+     tap target comfortable on touch. */
+  .input {
+    @apply w-full min-h-[42px] bg-surface-2 border border-border-strong rounded-xl px-3.5 py-2.5 text-sm text-ink
+      placeholder:text-muted outline-none transition-colors duration-fast ease-standard
+      hover:border-muted
+      focus:bg-surface focus:border-primary focus:ring-2 focus:ring-primary/30
+      disabled:opacity-60 disabled:cursor-not-allowed;
+  }
+  /* Invalid state is carried by colour AND the ring, never colour alone. */
+  .input[aria-invalid='true'] {
+    @apply border-danger focus:border-danger focus:ring-danger/30;
+  }
+  .label {
+    @apply block text-sm font-medium text-ink mb-1.5;
+  }
+  .hint {
+    @apply text-xs text-muted mt-1.5;
+  }
+  /* Uppercase section label. Small caps need the extra tracking to stay legible. */
+  .eyebrow {
+    @apply text-eyebrow font-medium uppercase text-muted;
+  }
+  /* Display headings — the distinctive grotesk, tight tracking. */
+  .h-display {
+    @apply font-display tracking-tight text-ink;
+  }
+}
+
+/* Simple fade-in for page content */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-in {
+  animation: fadeIn 0.25s ease-out;
+}
+
+/* ── Voice waveform motif ─────────────────────────────────────────────────
+   A row of bars that pulse like a live audio meter — reinforces the
+   voice/phone-call identity. Used in the dashboard hero + call surfaces. */
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.35); }
+  50% { transform: scaleY(1); }
+}
+.waveform {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 100%;
+}
+.waveform > span {
+  display: block;
+  width: 3px;
+  border-radius: 9999px;
+  background: currentColor;
+  transform-origin: center;
+  animation: wave 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .waveform > span { animation: none; transform: scaleY(0.6); }
+}
+
+/* ── Landing: 3D voice orb + ambient motion ──────────────────────────────── */
+
+/* Aurora blobs drifting behind the hero */
+@keyframes aurora {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(6%, -4%, 0) scale(1.12); }
+  66% { transform: translate3d(-5%, 5%, 0) scale(0.95); }
+}
+.animate-aurora { animation: aurora 18s ease-in-out infinite; }
+
+/* Gentle float for glass chips / cards */
+@keyframes floaty {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+.animate-float { animation: floaty 5s ease-in-out infinite; }
+
+/* Scroll reveal (toggled by IntersectionObserver adding .is-visible) */
+.reveal { opacity: 0; transform: translateY(22px); transition: opacity .6s ease, transform .6s cubic-bezier(.2,.7,.2,1); }
+.reveal.is-visible { opacity: 1; transform: translateY(0); }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-aurora, .animate-float { animation: none; }
+  /* The calculator thumb must not grow under reduced motion either. */
+  .range-teal:active::-webkit-slider-thumb { transform: none; }
+  .reveal { opacity: 1; transform: none; }
+}
+
+/* ── Range slider (landing calculator) ────────────────────────────────────
+   Browsers give range inputs a native look that ignores the palette entirely,
+   and the two engines need separate pseudo-elements — there is no shorthand.
+   The thumb is deliberately 22px: this is dragged with a thumb on a phone. */
+.range-teal {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+.range-teal:focus { outline: none; }
+.range-teal:focus-visible { outline: 2px solid theme('colors.primary.DEFAULT'); outline-offset: 4px; }
+
+/* WebKit / Blink */
+.range-teal::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: theme('colors.surface-2');
+  border: 1px solid theme('colors.border');
+}
+.range-teal::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 22px;
+  width: 22px;
+  margin-top: -9px; /* centre the thumb on a 6px track */
+  border-radius: 9999px;
+  background: theme('colors.primary.DEFAULT');
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px 0 rgba(15, 30, 43, 0.25);
+  transition: transform 0.12s ease;
+}
+.range-teal:active::-webkit-slider-thumb { transform: scale(1.12); }
+
+/* Firefox */
+.range-teal::-moz-range-track {
+  height: 6px;
+  border-radius: 9999px;
+  background: theme('colors.surface-2');
+  border: 1px solid theme('colors.border');
+}
+.range-teal::-moz-range-thumb {
+  height: 18px;
+  width: 18px;
+  border-radius: 9999px;
+  background: theme('colors.primary.DEFAULT');
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px 0 rgba(15, 30, 43, 0.25);
+}

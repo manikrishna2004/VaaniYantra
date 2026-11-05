@@ -1,0 +1,14 @@
+# ngrok config for Vaani AI — exposes both the Next.js app and the voice-server
+# so Twilio can reach them. Get your authtoken from https://dashboard.ngrok.com
+# and paste it below, then run:   ngrok start --all --config ngrok.yml
+#
+# It will print two public https URLs. In .env set:
+#   APP_BASE_URL  = the "app" tunnel's https URL
+#   VOICE_WS_URL  = the "voice" tunnel's URL but with wss:// (not https://)
+version: "3"
+agent:
+  authtoken: YOUR_NGROK_AUTHTOKEN
+tunnels:
+  voice:
+    addr: 8080
+    proto: http
